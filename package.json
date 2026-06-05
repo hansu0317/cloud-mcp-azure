@@ -1,0 +1,12 @@
+{
+  "name": "crm-chat",
+  "version": "1.0.0",
+  "description": "Makino CRM Chat Interface powered by Claude + Dataverse MCP",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

@@ -1,0 +1,13 @@
+# Dependency directories
+node_modules/
+
+# Log files
+*.log
+debug.log
+
+# AI assistant directories (Claude)
+.claude/
+
+# OS metadata
+.DS_Store
+Thumbs.db
