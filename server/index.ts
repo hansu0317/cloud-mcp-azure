@@ -208,9 +208,10 @@ app.post('/api/schemas/refresh', async (_req, res) => {
 
 // ─── API: 테이블 목록 ─────────────────────────────────────────────────────────
 app.get('/api/tables', (_req, res) => {
-  const tables = [...schemaMeta.entries()]
-    .filter(([name]) => schemaCache.has(name))
-    .map(([name, meta]) => ({ name, label: meta.label, domain: meta.domain }))
+  const tables = [...schemaCache.keys()].map(name => {
+    const meta = schemaMeta.get(name)
+    return { name, label: meta?.label ?? name, domain: meta?.domain ?? '기타' }
+  })
   res.json({ tables })
 })
 
