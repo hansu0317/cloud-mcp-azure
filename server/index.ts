@@ -5,10 +5,10 @@ import { spawn }            from 'child_process'
 import { randomUUID }       from 'crypto'
 import path                 from 'path'
 import fs                   from 'fs'
-import http                 from 'http'
 import log                  from './logger'
+import { setupSse, HttpStatus } from './sse'
+import { CLAUDE_BIN, buildClaudeArgs } from './claude'
 import type { Instructions, LogEntry, ServerStats } from '../shared/types'
-import { groqChat }         from './groq'
 
 // ─── 보안: Azure Dataverse 쓰기 도구 차단 목록 ────────────────────────────────
 const WRITE_TOOLS = new Set([
@@ -26,65 +26,81 @@ const WRITE_TOOLS = new Set([
 ])
 
 // ─── 환경변수 ─────────────────────────────────────────────────────────────────
-const PORT                = parseInt(process.env.PORT                 ?? '3000')
-const CHAT_TIMEOUT_MS     = parseInt(process.env.CHAT_TIMEOUT_MS      ?? '120000')
-const DESCRIBE_TIMEOUT_MS = parseInt(process.env.DESCRIBE_TIMEOUT_MS  ?? '60000')
-const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS  ?? '30000')
-const RL_WINDOW_MS        = parseInt(process.env.RATE_LIMIT_WINDOW_MS ?? '60000')
-const RL_MAX              = parseInt(process.env.RATE_LIMIT_MAX       ?? '20')
+const PORT                = parseInt(process.env.PORT                  ?? '3000')
+const CHAT_TIMEOUT_MS     = parseInt(process.env.CHAT_TIMEOUT_MS       ?? '120000')
+const DESCRIBE_TIMEOUT_MS = parseInt(process.env.DESCRIBE_TIMEOUT_MS   ?? '60000')
+const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS   ?? '30000')
+const RL_WINDOW_MS        = parseInt(process.env.RATE_LIMIT_WINDOW_MS  ?? '60000')
+const RL_MAX              = parseInt(process.env.RATE_LIMIT_MAX        ?? '20')
 const MAX_CONCURRENT      = parseInt(process.env.MAX_CONCURRENT_CLAUDE ?? '5')
 const MAX_SESSIONS        = parseInt(process.env.MAX_SESSIONS          ?? '200')
-const API_KEY             = process.env.API_KEY ?? ''  // 비어 있으면 인증 미적용
+const API_KEY             = process.env.API_KEY ?? ''
 
-const CWD         = process.cwd()  // npm start / PM2 모두 프로젝트 루트에서 실행
+const CWD         = process.cwd()
 const INST_FILE   = path.join(CWD, 'data', 'instructions.json')
 const SCHEMA_FILE = path.join(CWD, 'data', 'schema.json')
 const DIST_DIR    = path.join(CWD, 'dist')
 const DOCS_DIR    = path.join(CWD, 'docs')
 
-const CLAUDE_BIN = process.platform === 'win32'
-  ? path.join(process.env.APPDATA ?? '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe')
-  : 'claude'
-
-// ─── 동시 접속 세마포어 (M2) ──────────────────────────────────────────────────
-let activeClaudeProcs = 0
-const concurrentQueue: Array<() => void> = []
-
-function acquireSemaphore(): Promise<void> {
-  return new Promise(resolve => {
-    if (activeClaudeProcs < MAX_CONCURRENT) { activeClaudeProcs++; resolve() }
-    else concurrentQueue.push(resolve)
-  })
+// ─── 유틸: JSON 파일 읽기 (실패 시 fallback 반환) ────────────────────────────
+function readJsonFile<T>(filepath: string, fallback: T): T {
+  try { return JSON.parse(fs.readFileSync(filepath, 'utf8')) as T }
+  catch { return fallback }
 }
 
-function releaseSemaphore() {
-  const next = concurrentQueue.shift()
-  if (next) { next() }
-  else { activeClaudeProcs-- }
+// ─── 동시 접속 세마포어 ───────────────────────────────────────────────────────
+class Semaphore {
+  private active  = 0
+  private queue: Array<() => void> = []
+
+  constructor(private max: number) {}
+
+  acquire(): Promise<void> {
+    return new Promise(resolve => {
+      if (this.active < this.max) { this.active++; resolve() }
+      else this.queue.push(resolve)
+    })
+  }
+
+  release(): void {
+    const next = this.queue.shift()
+    if (next) next()
+    else this.active--
+  }
+
+  get size()    { return this.active }
+  get pending() { return this.queue.length }
+
+  // 활성 + 대기가 모두 꽉 찬 경우 (즉시 거절 기준)
+  isOverloaded(): boolean {
+    return this.active >= this.max && this.queue.length >= this.max * 2
+  }
 }
+
+const claudeSemaphore = new Semaphore(MAX_CONCURRENT)
 
 // ─── 상태 ─────────────────────────────────────────────────────────────────────
 const stats: ServerStats & { startTime: number } = {
   startTime: Date.now(), sessions: 0, queries: 0, toolCalls: 0,
   securityBlocks: 0, uptime: 0, activeSessions: 0,
 }
+
 interface SchemaEntry { label?: string; domain?: string; schema?: string; updatedAt?: string }
-const schemaCache    = new Map<string, string>()
-const schemaMeta     = new Map<string, { label: string; domain: string }>()
-const pendingDescribe = new Map<string, Promise<string>>()  // 중복 describe 방지
+const schemaCache     = new Map<string, string>()
+const schemaMeta      = new Map<string, { label: string; domain: string }>()
+const pendingDescribe = new Map<string, Promise<string>>()
 
 interface SessionEntry { claudeSessionId: string; lastUsed: number }
-const sessionMap     = new Map<string, SessionEntry>()  // 웹UUID → { claudeSessionId, lastUsed }
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000  // 24시간
+const sessionMap     = new Map<string, SessionEntry>()
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000
 
-// 만료 세션 + 초과 세션 정리 (매 1시간)
+// 만료·초과 세션 정리 (매 1시간)
 setInterval(() => {
   const cutoff = Date.now() - SESSION_TTL_MS
-  let removed = 0
+  let removed  = 0
   for (const [id, entry] of sessionMap) {
     if (entry.lastUsed < cutoff) { sessionMap.delete(id); removed++ }
   }
-  // 세션 맵이 MAX_SESSIONS 초과 시 가장 오래된 것부터 정리
   if (sessionMap.size > MAX_SESSIONS) {
     const sorted = [...sessionMap.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed)
     const excess = sessionMap.size - MAX_SESSIONS
@@ -93,19 +109,18 @@ setInterval(() => {
   if (removed) log.info('SESSION', `세션 정리: ${removed}개 삭제 (현재: ${sessionMap.size})`)
 }, 60 * 60 * 1000).unref()
 
-// 스키마 캐시 파일 로드
+// 스키마 파일 캐시 초기 로드
 ;(function loadSchemaCache() {
-  try {
-    const data = JSON.parse(fs.readFileSync(SCHEMA_FILE, 'utf8')) as Record<string, SchemaEntry>
-    for (const [table, info] of Object.entries(data)) {
-      if (info?.schema) schemaCache.set(table, info.schema)
-      if (info?.label || info?.domain) schemaMeta.set(table, { label: info.label ?? table, domain: info.domain ?? '기타' })
-    }
-    if (schemaCache.size) log.info('SCHEMA', `파일 캐시 로드: ${schemaCache.size}개 테이블`)
-  } catch { /* 파일 없으면 무시 */ }
+  const data = readJsonFile<Record<string, SchemaEntry>>(SCHEMA_FILE, {})
+  for (const [table, info] of Object.entries(data)) {
+    if (info?.schema) schemaCache.set(table, info.schema)
+    if (info?.label || info?.domain)
+      schemaMeta.set(table, { label: info.label ?? table, domain: info.domain ?? '기타' })
+  }
+  if (schemaCache.size) log.info('SCHEMA', `파일 캐시 로드: ${schemaCache.size}개 테이블`)
 })()
 
-// 채팅 첫 메시지에 주입할 스키마 컨텍스트 생성
+// 채팅 첫 메시지에 주입할 스키마 컨텍스트
 function buildSchemaContext(): string {
   if (schemaCache.size === 0) return ''
   const lines = ['[Dataverse 테이블 스키마 — 아래 정보를 기반으로 OData 쿼리를 작성하세요]']
@@ -119,16 +134,16 @@ function buildSchemaContext(): string {
 
 // ─── Express ──────────────────────────────────────────────────────────────────
 const app = express()
-app.set('trust proxy', 1)  // nginx 리버스 프록시 뒤에서 실제 클라이언트 IP 추출
+app.set('trust proxy', 1)
 app.use(express.json())
 
-// ─── API 키 인증 미들웨어 (M1) ── API_KEY 설정 시 활성화 ────────────────────
+// API 키 인증 미들웨어 (API_KEY 설정 시 활성화)
 if (API_KEY) {
   app.use('/api', (req, res, next) => {
     const provided = req.headers['x-api-key'] ?? req.query['api_key']
     if (provided !== API_KEY) {
       log.error('AUTH', '인증 실패', { ip: req.ip, path: req.path })
-      res.status(401).json({ error: '인증이 필요합니다. X-API-Key 헤더를 확인하세요.' })
+      res.status(HttpStatus.UNAUTHORIZED).json({ error: '인증이 필요합니다. X-API-Key 헤더를 확인하세요.' })
       return
     }
     next()
@@ -144,66 +159,18 @@ const chatLimiter = rateLimit({
   message:         { error: '요청이 너무 많습니다. 잠시 후 다시 시도하세요.' },
 })
 app.use('/api/chat',     chatLimiter)
-app.use('/api/describe', chatLimiter)  // describe도 Claude 프로세스를 spawn하므로 제한 필요
+app.use('/api/describe', chatLimiter)
 
 if (fs.existsSync(DIST_DIR)) app.use(express.static(DIST_DIR))
 if (fs.existsSync(DOCS_DIR)) app.use('/docs', express.static(DOCS_DIR))
 
-// ─── fastmcp 프록시 (PostgreSQL 모드) ────────────────────────────────────────
-const FASTMCP_PORT = parseInt(process.env.FASTMCP_PORT ?? '8000')
-
-const FASTMCP_TIMEOUT_MS = parseInt(process.env.FASTMCP_TIMEOUT_MS ?? '120000')
-
-function proxyToFastmcp(path: string, req: express.Request, res: express.Response) {
-  const body = JSON.stringify(req.body)
-  const proxyReq = http.request(
-    { hostname: 'localhost', port: FASTMCP_PORT, path, method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      timeout: FASTMCP_TIMEOUT_MS },
-    (proxyRes) => {
-      proxyRes.headers['content-type'] && res.setHeader('Content-Type', proxyRes.headers['content-type'])
-      proxyRes.headers['cache-control'] && res.setHeader('Cache-Control', proxyRes.headers['cache-control'])
-      proxyRes.headers['x-accel-buffering'] && res.setHeader('X-Accel-Buffering', proxyRes.headers['x-accel-buffering'] as string)
-      res.status(proxyRes.statusCode ?? 200)
-      if ((proxyRes.headers['content-type'] ?? '').includes('event-stream')) res.flushHeaders()
-      proxyRes.pipe(res)
-    }
-  )
-  proxyReq.on('timeout', () => {
-    proxyReq.destroy()
-    if (!res.writableEnded) {
-      res.setHeader('Content-Type', 'text/event-stream')
-      res.write(`data: ${JSON.stringify({ type: 'error', message: 'PostgreSQL 서버 응답 시간 초과' })}\n\n`)
-      res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`)
-      res.end()
-    }
-  })
-  proxyReq.on('error', (err) => {
-    if (!res.writableEnded) {
-      res.setHeader('Content-Type', 'text/event-stream')
-      res.write(`data: ${JSON.stringify({ type: 'error', message: `PostgreSQL 서버 연결 실패: ${err.message}` })}\n\n`)
-      res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`)
-      res.end()
-    }
-  })
-  proxyReq.write(body)
-  proxyReq.end()
-}
-
-app.post('/api/sql/chat',        (req, res) => proxyToFastmcp('/api/sql/chat', req, res))
-app.post('/api/sql/session/new', (req, res) => proxyToFastmcp('/api/session/new', req, res))
-
-// ─── API: 스키마 갱신 (schema.json의 모든 테이블 재조회) ─────────────────────
+// ─── API: 스키마 갱신 ─────────────────────────────────────────────────────────
 app.post('/api/schemas/refresh', async (_req, res) => {
-  let data: Record<string, SchemaEntry> = {}
-  try { data = JSON.parse(fs.readFileSync(SCHEMA_FILE, 'utf8')) } catch { /* 없으면 빈 객체 */ }
-
+  const data   = readJsonFile<Record<string, SchemaEntry>>(SCHEMA_FILE, {})
   const tables = Object.keys(data)
   if (tables.length === 0) { res.json({ updated: 0, tables: [] }); return }
 
   log.info('SCHEMA', `갱신 시작 — ${tables.length}개 테이블: ${tables.join(', ')}`)
-
-  // schemaCache 초기화 후 순차 재조회
   schemaCache.clear()
   schemaMeta.clear()
 
@@ -217,34 +184,25 @@ app.post('/api/schemas/refresh', async (_req, res) => {
       const meta   = data[table]
       if (meta?.label || meta?.domain) schemaMeta.set(table, { label: meta.label ?? table, domain: meta.domain ?? '기타' })
       results.push(table)
-      const sec = ((Date.now() - t0) / 1000).toFixed(1)
-      log.info('SCHEMA', `[${i + 1}/${tables.length}] ${table} 완료 (${sec}초)`)
-      // label/domain 보존하며 schema만 교체
+      log.info('SCHEMA', `[${i + 1}/${tables.length}] ${table} 완료 (${elapsed(t0)}초)`)
       data[table] = { ...data[table], schema, updatedAt: new Date().toISOString() }
     } catch (e) {
-      const sec = ((Date.now() - t0) / 1000).toFixed(1)
-      log.error('SCHEMA', `[${i + 1}/${tables.length}] ${table} 실패 (${sec}초)`, { error: String(e) })
+      log.error('SCHEMA', `[${i + 1}/${tables.length}] ${table} 실패 (${elapsed(t0)}초)`, { error: String(e) })
     }
   }
 
-  const totalSec = ((Date.now() - totalStart) / 1000).toFixed(1)
-  log.info('SCHEMA', `갱신 완료 — ${results.length}/${tables.length}개 성공 (총 ${totalSec}초)`)
-
+  log.info('SCHEMA', `갱신 완료 — ${results.length}/${tables.length}개 성공 (총 ${elapsed(totalStart)}초)`)
   try { fs.writeFileSync(SCHEMA_FILE, JSON.stringify(data, null, 2)) } catch { /* 무시 */ }
   res.json({ updated: results.length, tables: results })
 })
 
-// ─── API: 테이블 목록 (동적 — schema.json 기반) ───────────────────────────────
+// ─── API: 테이블 목록 ─────────────────────────────────────────────────────────
 app.get('/api/tables', (_req, res) => {
-  try {
-    const data = JSON.parse(fs.readFileSync(SCHEMA_FILE, 'utf8')) as Record<string, SchemaEntry>
-    const tables = Object.entries(data)
-      .filter(([, v]) => v.schema)
-      .map(([name, v]) => ({ name, label: v.label ?? name, domain: v.domain ?? '기타' }))
-    res.json({ tables })
-  } catch {
-    res.json({ tables: [] })
-  }
+  const data   = readJsonFile<Record<string, SchemaEntry>>(SCHEMA_FILE, {})
+  const tables = Object.entries(data)
+    .filter(([, v]) => v.schema)
+    .map(([name, v]) => ({ name, label: v.label ?? name, domain: v.domain ?? '기타' }))
+  res.json({ tables })
 })
 
 // ─── API: 세션 발급 ───────────────────────────────────────────────────────────
@@ -255,80 +213,51 @@ app.post('/api/session/new', (_req, res) => {
   res.json({ sessionId })
 })
 
-// ─── API: 채팅 (SSE 스트리밍) ─────────────────────────────────────────────────
+// ─── API: 채팅 (SSE 스트리밍 — Claude Code + MCP) ────────────────────────────
 app.post('/api/chat', async (req, res) => {
-  const { message, sessionId, cellType = 'chat' } = req.body as {
-    message: string; sessionId: string; cellType?: string
-  }
+  const { message, sessionId } = req.body as { message: string; sessionId: string }
 
   if (!message || !sessionId) {
-    res.status(400).json({ error: 'message와 sessionId가 필요합니다.' })
+    res.status(HttpStatus.BAD_REQUEST).json({ error: 'message와 sessionId가 필요합니다.' })
     return
   }
 
-  if (cellType === 'sql_cell') {
-    res.status(501).json({ error: 'SQL 직접 실행은 아직 미구현입니다.' })
-    return
-  }
-
-  // 동시 접속 제한 (M2)
-  if (activeClaudeProcs >= MAX_CONCURRENT && concurrentQueue.length >= MAX_CONCURRENT * 2) {
-    res.status(429).json({ error: '현재 요청이 많습니다. 잠시 후 다시 시도하세요.' })
+  if (claudeSemaphore.isOverloaded()) {
+    res.status(HttpStatus.TOO_MANY_REQUESTS).json({ error: '현재 요청이 많습니다. 잠시 후 다시 시도하세요.' })
     return
   }
 
   stats.queries++
-  const rawQ     = message.includes('\n\n') ? message.split('\n\n').slice(1).join('\n\n').trim() : message
-  const startMs  = Date.now()
+  const rawQ    = message.includes('\n\n') ? message.split('\n\n').slice(1).join('\n\n').trim() : message
+  const startMs = Date.now()
   const queryLog: { tool: string; input: Record<string, unknown> }[] = []
-
   log.info('질문', rawQ.slice(0, 300))
 
-  // 새 세션 첫 메시지에 스키마 컨텍스트 주입
-  const isNewSession = !sessionMap.has(sessionId)
-  const finalMessage = isNewSession && schemaCache.size > 0
+  // 새 세션 첫 메시지에만 스키마 컨텍스트 주입
+  const isNewSession   = !sessionMap.has(sessionId)
+  const finalMessage   = isNewSession && schemaCache.size > 0
     ? `${buildSchemaContext()}\n\n${message}`
     : message
 
-  res.setHeader('Content-Type',       'text/event-stream')
-  res.setHeader('Cache-Control',      'no-cache')
-  res.setHeader('Connection',         'keep-alive')
-  res.setHeader('X-Accel-Buffering',  'no')
-  res.flushHeaders()
+  const send = setupSse(res)
 
-  await acquireSemaphore()
-
-  const args = [
-    '-p', finalMessage,
-    '--output-format', 'stream-json',
-    '--verbose',
-    '--dangerously-skip-permissions',
-  ]
+  await claudeSemaphore.acquire()
 
   const entry = sessionMap.get(sessionId)
-  if (entry) {
-    args.push('--resume', entry.claudeSessionId)
-    entry.lastUsed = Date.now()
-  }
+  if (entry) entry.lastUsed = Date.now()
 
-  const claude = spawn(CLAUDE_BIN, args, {
-    cwd: CWD, shell: false,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: process.env,
+  const claude = spawn(CLAUDE_BIN, buildClaudeArgs(finalMessage, { resume: entry?.claudeSessionId }), {
+    cwd: CWD, shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
   })
 
   claude.stdout.setEncoding('utf8')
   claude.stderr.setEncoding('utf8')
 
-  let buffer        = ''
-  let lastText      = ''
-  let newSessionId  = ''
-  let finished      = false
+  let buffer       = ''
+  let lastText     = ''
+  let newSessionId = ''
+  let finished     = false
   let toolCallCount = 0
-
-  const send = (data: object) => {
-    if (!res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`)
-  }
 
   const timeoutId = setTimeout(() => {
     if (!finished) {
@@ -358,7 +287,7 @@ app.post('/api/chat', async (req, res) => {
         }
 
         if (event.type === 'assistant') {
-          const content = (event.message as Record<string, unknown>)?.content as Array<Record<string, unknown>> ?? []
+          const content = ((event.message as Record<string, unknown>)?.content ?? []) as Array<Record<string, unknown>>
           for (const block of content) {
             if (block.type === 'text') {
               const text = block.text as string
@@ -378,15 +307,13 @@ app.post('/api/chat', async (req, res) => {
               }
               stats.toolCalls++
               toolCallCount++
-              const toolName  = name.replace('mcp__dataverse__', '')
-              const toolInput = (block.input ?? {}) as Record<string, unknown>
+              const toolName   = name.replace('mcp__dataverse__', '')
+              const toolInput  = (block.input ?? {}) as Record<string, unknown>
               queryLog.push({ tool: toolName, input: toolInput })
-              const queryPreview = (toolInput.querytext ?? toolInput.fetchXml ?? JSON.stringify(toolInput)) as string
-              log.info('쿼리', `[${toolName}] ${String(queryPreview).slice(0, 200)}`)
+              const queryPreview = String(toolInput.querytext ?? toolInput.fetchXml ?? JSON.stringify(toolInput))
+              log.info('쿼리', `[${toolName}] ${queryPreview.slice(0, 200)}`)
               send({ type: 'tool', name: toolName })
-              if (Object.keys(toolInput).length > 0) {
-                send({ type: 'query', tool: toolName, input: toolInput })
-              }
+              if (Object.keys(toolInput).length > 0) send({ type: 'query', tool: toolName, input: toolInput })
             }
           }
         }
@@ -395,8 +322,7 @@ app.post('/api/chat', async (req, res) => {
           if (newSessionId) sessionMap.set(sessionId, { claudeSessionId: newSessionId, lastUsed: Date.now() })
           if (!finished) {
             finished = true; cleanup()
-            const durationSec = ((Date.now() - startMs) / 1000).toFixed(1)
-            log.info('답변', `${lastText.slice(0, 300)} (${durationSec}초, 쿼리 ${queryLog.length}회)`)
+            log.info('답변', `${lastText.slice(0, 300)} (${elapsed(startMs)}초, 쿼리 ${queryLog.length}회)`)
             send({ type: 'done' })
           }
         }
@@ -405,39 +331,38 @@ app.post('/api/chat', async (req, res) => {
   })
 
   claude.stderr.on('data', (data: string) => {
-    const text = data.trim()
-    if (!text) return
-    const isBenign = /warning|deprecat|experimental|^\(use\s|^node:/i.test(text)
-    if (!isBenign) log.error('오류', text.slice(0, 300), { sessionId })
+    const text    = data.trim()
+    const benign  = /warning|deprecat|experimental|^\(use\s|^node:/i.test(text)
+    if (text && !benign) log.error('오류', text.slice(0, 300), { sessionId })
   })
 
-  claude.on('close', (code: number | null) => {
-    releaseSemaphore()
+  claude.on('close', () => {
+    claudeSemaphore.release()
     cleanup()
     if (!finished) send({ type: 'done' })
     if (!res.writableEnded) res.end()
   })
 
   claude.on('error', (err: Error) => {
-    releaseSemaphore()
+    claudeSemaphore.release()
     cleanup()
     log.error('오류', `Claude 실행 실패: ${err.message}`, { sessionId })
     send({ type: 'error', message: `Claude 실행 오류: ${err.message}` })
     if (!res.writableEnded) res.end()
   })
 
-  res.on('close', () => {
-    cleanup()
-    if (!claude.killed) claude.kill()
-  })
+  res.on('close', () => { cleanup(); if (!claude.killed) claude.kill() })
 })
 
-// ─── API: 테이블 스키마 describe ─────────────────────────────────────────────
+// ─── 테이블 스키마 describe (Claude Code → mcp__dataverse__describe) ──────────
 function spawnDescribe(table: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const prompt = `Dataverse 테이블 "${table}"을 describe 도구로 조회한 뒤, 주요 컬럼명·타입·한국어 설명을 마크다운 표로 간결하게 정리해줘. 표만 출력해.`
-    const args   = ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
-    const claude = spawn(CLAUDE_BIN, args, { cwd: CWD, shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: process.env })
+    const claude = spawn(
+      CLAUDE_BIN,
+      buildClaudeArgs(prompt, { allowedTools: 'mcp__dataverse__describe' }),
+      { cwd: CWD, shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: process.env }
+    )
 
     let lastText = '', buf = ''
     claude.stdout.setEncoding('utf8')
@@ -448,9 +373,9 @@ function spawnDescribe(table: string): Promise<string> {
         try {
           const ev = JSON.parse(line.trim()) as Record<string, unknown>
           if (ev.type === 'assistant') {
-            for (const block of (ev.message as Record<string, unknown[]>)?.content ?? []) {
-              const b = block as Record<string, unknown>
-              if (b.type === 'text' && (b.text as string).length > lastText.length) lastText = b.text as string
+            for (const block of ((ev.message as Record<string, unknown>)?.content as Array<Record<string, unknown>> ?? [])) {
+              if (block.type === 'text' && (block.text as string).length > lastText.length)
+                lastText = block.text as string
             }
           }
         } catch { /* 무시 */ }
@@ -462,24 +387,22 @@ function spawnDescribe(table: string): Promise<string> {
       clearTimeout(timer)
       if (!lastText) { reject(new Error('스키마 조회 결과가 없습니다.')); return }
       schemaCache.set(table, lastText)
-      try {
-        const existing = JSON.parse(fs.readFileSync(SCHEMA_FILE, 'utf8') || '{}') as Record<string, SchemaEntry>
-        // label/domain 기존 메타데이터 보존, schema만 교체
-        existing[table] = { ...existing[table], schema: lastText, updatedAt: new Date().toISOString() }
-        fs.writeFileSync(SCHEMA_FILE, JSON.stringify(existing, null, 2))
-      } catch { /* 무시 */ }
+      const existing = readJsonFile<Record<string, SchemaEntry>>(SCHEMA_FILE, {})
+      existing[table] = { ...existing[table], schema: lastText, updatedAt: new Date().toISOString() }
+      try { fs.writeFileSync(SCHEMA_FILE, JSON.stringify(existing, null, 2)) } catch { /* 무시 */ }
       resolve(lastText)
     })
     claude.on('error', (err: Error) => { clearTimeout(timer); reject(err) })
   })
 }
 
+// ─── API: 테이블 스키마 describe ─────────────────────────────────────────────
 app.get('/api/describe', (req, res) => {
   const table = req.query.table as string | undefined
-  if (!table) { res.status(400).json({ error: 'table 파라미터 필요' }); return }
+  if (!table) { res.status(HttpStatus.BAD_REQUEST).json({ error: 'table 파라미터 필요' }); return }
   if (schemaCache.has(table)) { res.json({ schema: schemaCache.get(table), cached: true }); return }
 
-  // 동일 테이블 동시 요청은 하나의 Claude 프로세스에 합류
+  // 동일 테이블 동시 요청은 하나의 프로세스에 합류
   const pending = pendingDescribe.get(table)
   const p = pending ?? spawnDescribe(table)
   if (!pending) {
@@ -487,38 +410,37 @@ app.get('/api/describe', (req, res) => {
     p.finally(() => pendingDescribe.delete(table))
   }
 
-  p.then(schema  => { if (!res.writableEnded) res.json({ schema, cached: false }) })
-   .catch(err    => { if (!res.writableEnded) res.status(500).json({ error: (err as Error).message }) })
+  p.then(schema => { if (!res.writableEnded) res.json({ schema, cached: false }) })
+   .catch(err   => { if (!res.writableEnded) res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ error: (err as Error).message }) })
 })
 
 // ─── API: 지침 ────────────────────────────────────────────────────────────────
-function readInst(): Instructions {
-  try { return JSON.parse(fs.readFileSync(INST_FILE, 'utf8')) as Instructions }
-  catch { return { joins: [], terms: [], examples: [] } }
+function readInstructions(): Instructions {
+  return readJsonFile<Instructions>(INST_FILE, { joins: [], terms: [], examples: [] })
 }
 
-app.get('/api/instructions',  (_req, res) => res.json(readInst()))
+app.get('/api/instructions',  (_req, res) => res.json(readInstructions()))
 app.post('/api/instructions', (req, res) => {
   try {
     fs.writeFileSync(INST_FILE, JSON.stringify(req.body, null, 2))
     res.json({ ok: true })
   } catch (err) {
-    res.status(500).json({ error: (err as Error).message })
+    res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ error: (err as Error).message })
   }
 })
 
 // ─── API: 서버 통계 ───────────────────────────────────────────────────────────
 app.get('/api/stats', (_req, res) => {
   res.json({
-    uptime:         Math.floor((Date.now() - stats.startTime) / 1000),
+    uptime:          Math.floor((Date.now() - stats.startTime) / 1000),
     sessions:        stats.sessions,
     queries:         stats.queries,
     toolCalls:       stats.toolCalls,
     securityBlocks:  stats.securityBlocks,
     activeSessions:  sessionMap.size,
-    activeProcs:     activeClaudeProcs,
+    activeProcs:     claudeSemaphore.size,
     maxProcs:        MAX_CONCURRENT,
-    queuedRequests:  concurrentQueue.length,
+    queuedRequests:  claudeSemaphore.pending,
   } satisfies ServerStats)
 })
 
@@ -534,46 +456,41 @@ app.get('/api/logs', (req, res) => {
       .filter(Boolean)
     res.json(entries)
   } catch (err) {
-    res.status(500).json({ error: (err as Error).message })
+    res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ error: (err as Error).message })
   }
 })
-
-// ─── Groq 라우트 (Claude CLI spawn 없이 Groq API 직접 호출) ──────────────────
-app.use('/api/groq/chat', chatLimiter)
-app.post('/api/groq/chat', groqChat)
 
 // ─── SPA 폴백 ─────────────────────────────────────────────────────────────────
 app.get('*', (_req, res) => {
   const indexPath = path.join(DIST_DIR, 'index.html')
-  if (fs.existsSync(indexPath)) {
-    res.sendFile(indexPath)
-  } else {
-    res.status(503).send('프론트엔드 빌드가 없습니다. npm run build 를 실행하세요.')
-  }
+  if (fs.existsSync(indexPath)) res.sendFile(indexPath)
+  else res.status(HttpStatus.SERVICE_UNAVAILABLE).send('프론트엔드 빌드가 없습니다. npm run build 를 실행하세요.')
 })
 
 // ─── 서버 기동 ────────────────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {
   log.info('SERVER', `Quali CRM Chat 서버 기동 — http://localhost:${PORT}`)
-  console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-  console.log('  Quali CRM Chat 서버 실행 중')
+  console.log(`\n${'━'.repeat(40)}`)
+  console.log(`  Quali CRM Chat 서버 실행 중`)
   console.log(`  http://localhost:${PORT}`)
   console.log(`  타임아웃: ${CHAT_TIMEOUT_MS / 1000}s  Rate-limit: ${RL_MAX}req/${RL_WINDOW_MS / 1000}s`)
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
+  console.log(`${'━'.repeat(40)}\n`)
 })
 
 // ─── Graceful Shutdown ────────────────────────────────────────────────────────
-function shutdown(signal: string) {
+function gracefulShutdown(signal: string) {
   log.info('SERVER', `${signal} 수신 — graceful shutdown 시작`)
   server.close(() => {
     log.info('SERVER', '모든 연결 종료 — 프로세스 정상 종료')
     process.exit(0)
   })
-  setTimeout(() => {
-    log.error('SERVER', 'Graceful shutdown 타임아웃 — 강제 종료')
-    process.exit(1)
-  }, SHUTDOWN_TIMEOUT_MS).unref()
+  setTimeout(() => { log.error('SERVER', '강제 종료'); process.exit(1) }, SHUTDOWN_TIMEOUT_MS)
 }
 
-process.on('SIGTERM', () => shutdown('SIGTERM'))
-process.on('SIGINT',  () => shutdown('SIGINT'))
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+process.on('SIGINT',  () => gracefulShutdown('SIGINT'))
+
+// ─── 유틸: 경과 시간(초) 문자열 ──────────────────────────────────────────────
+function elapsed(startMs: number): string {
+  return ((Date.now() - startMs) / 1000).toFixed(1)
+}
