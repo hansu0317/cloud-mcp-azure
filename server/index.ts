@@ -42,10 +42,14 @@ const SCHEMA_FILE = path.join(CWD, 'data', 'schema.json')
 const DIST_DIR    = path.join(CWD, 'dist')
 const DOCS_DIR    = path.join(CWD, 'docs')
 
-// ─── 유틸: JSON 파일 읽기 (실패 시 fallback 반환) ────────────────────────────
+// ─── 유틸 ────────────────────────────────────────────────────────────────────
 function readJsonFile<T>(filepath: string, fallback: T): T {
   try { return JSON.parse(fs.readFileSync(filepath, 'utf8')) as T }
   catch { return fallback }
+}
+
+function elapsed(startMs: number): string {
+  return ((Date.now() - startMs) / 1000).toFixed(1)
 }
 
 // ─── 동시 접속 세마포어 ───────────────────────────────────────────────────────
@@ -77,7 +81,8 @@ class Semaphore {
   }
 }
 
-const claudeSemaphore = new Semaphore(MAX_CONCURRENT)
+const claudeSemaphore  = new Semaphore(MAX_CONCURRENT)
+let   schemaRefreshing = false
 
 // ─── 상태 ─────────────────────────────────────────────────────────────────────
 const stats: ServerStats & { startTime: number } = {
@@ -166,9 +171,13 @@ if (fs.existsSync(DOCS_DIR)) app.use('/docs', express.static(DOCS_DIR))
 
 // ─── API: 스키마 갱신 ─────────────────────────────────────────────────────────
 app.post('/api/schemas/refresh', async (_req, res) => {
+  if (schemaRefreshing) { res.json({ updated: 0, tables: [], message: '갱신이 이미 진행 중입니다.' }); return }
+
   const data   = readJsonFile<Record<string, SchemaEntry>>(SCHEMA_FILE, {})
   const tables = Object.keys(data)
   if (tables.length === 0) { res.json({ updated: 0, tables: [] }); return }
+
+  schemaRefreshing = true
 
   log.info('SCHEMA', `갱신 시작 — ${tables.length}개 테이블: ${tables.join(', ')}`)
   schemaCache.clear()
@@ -192,16 +201,16 @@ app.post('/api/schemas/refresh', async (_req, res) => {
   }
 
   log.info('SCHEMA', `갱신 완료 — ${results.length}/${tables.length}개 성공 (총 ${elapsed(totalStart)}초)`)
+  schemaRefreshing = false
   try { fs.writeFileSync(SCHEMA_FILE, JSON.stringify(data, null, 2)) } catch { /* 무시 */ }
   res.json({ updated: results.length, tables: results })
 })
 
 // ─── API: 테이블 목록 ─────────────────────────────────────────────────────────
 app.get('/api/tables', (_req, res) => {
-  const data   = readJsonFile<Record<string, SchemaEntry>>(SCHEMA_FILE, {})
-  const tables = Object.entries(data)
-    .filter(([, v]) => v.schema)
-    .map(([name, v]) => ({ name, label: v.label ?? name, domain: v.domain ?? '기타' }))
+  const tables = [...schemaMeta.entries()]
+    .filter(([name]) => schemaCache.has(name))
+    .map(([name, meta]) => ({ name, label: meta.label, domain: meta.domain }))
   res.json({ tables })
 })
 
@@ -249,6 +258,9 @@ app.post('/api/chat', async (req, res) => {
   const claude = spawn(CLAUDE_BIN, buildClaudeArgs(finalMessage, { resume: entry?.claudeSessionId }), {
     cwd: CWD, shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
   })
+
+  let semReleased = false
+  const releaseSem = () => { if (!semReleased) { semReleased = true; claudeSemaphore.release() } }
 
   claude.stdout.setEncoding('utf8')
   claude.stderr.setEncoding('utf8')
@@ -337,14 +349,14 @@ app.post('/api/chat', async (req, res) => {
   })
 
   claude.on('close', () => {
-    claudeSemaphore.release()
+    releaseSem()
     cleanup()
     if (!finished) send({ type: 'done' })
     if (!res.writableEnded) res.end()
   })
 
   claude.on('error', (err: Error) => {
-    claudeSemaphore.release()
+    releaseSem()
     cleanup()
     log.error('오류', `Claude 실행 실패: ${err.message}`, { sessionId })
     send({ type: 'error', message: `Claude 실행 오류: ${err.message}` })
@@ -460,6 +472,11 @@ app.get('/api/logs', (req, res) => {
   }
 })
 
+// ─── 유틸: 경과 시간(초) 문자열 ──────────────────────────────────────────────
+function elapsed(startMs: number): string {
+  return ((Date.now() - startMs) / 1000).toFixed(1)
+}
+
 // ─── SPA 폴백 ─────────────────────────────────────────────────────────────────
 app.get('*', (_req, res) => {
   const indexPath = path.join(DIST_DIR, 'index.html')
@@ -489,8 +506,3 @@ function gracefulShutdown(signal: string) {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT',  () => gracefulShutdown('SIGINT'))
-
-// ─── 유틸: 경과 시간(초) 문자열 ──────────────────────────────────────────────
-function elapsed(startMs: number): string {
-  return ((Date.now() - startMs) / 1000).toFixed(1)
-}

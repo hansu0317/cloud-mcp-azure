@@ -24,18 +24,18 @@ function localISO(): string {
     + `${sign}${String(Math.floor(abs / 60)).padStart(2,'0')}:${String(abs % 60).padStart(2,'0')}`
 }
 
-function write(level: 'INFO' | 'ERROR', category: string, message: string, data?: unknown): void {
+function write(level: 'info' | 'error', category: string, message: string, data?: unknown): void {
   const entry: Record<string, unknown> = { time: localISO(), level, category, message }
   if (data !== undefined) entry.data = data
   appStream.write(JSON.stringify(entry) + '\n')
 
-  const color = level === 'ERROR' ? '\x1b[31m' : '\x1b[36m'
+  const color = level === 'error' ? '\x1b[31m' : '\x1b[36m'
   const reset = '\x1b[0m'
   const dataStr = data !== undefined ? ' ' + JSON.stringify(data) : ''
-  console.log(`${color}[${level}]${reset} [${category}] ${message}${dataStr}`)
+  console.log(`${color}[${level.toUpperCase()}]${reset} [${category}] ${message}${dataStr}`)
 }
 
 export default {
-  info:  (cat: string, msg: string, data?: unknown) => write('INFO',  cat, msg, data),
-  error: (cat: string, msg: string, data?: unknown) => write('ERROR', cat, msg, data),
+  info:  (cat: string, msg: string, data?: unknown) => write('info',  cat, msg, data),
+  error: (cat: string, msg: string, data?: unknown) => write('error', cat, msg, data),
 }
