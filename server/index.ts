@@ -472,11 +472,6 @@ app.get('/api/logs', (req, res) => {
   }
 })
 
-// ─── 유틸: 경과 시간(초) 문자열 ──────────────────────────────────────────────
-function elapsed(startMs: number): string {
-  return ((Date.now() - startMs) / 1000).toFixed(1)
-}
-
 // ─── SPA 폴백 ─────────────────────────────────────────────────────────────────
 app.get('*', (_req, res) => {
   const indexPath = path.join(DIST_DIR, 'index.html')
