@@ -181,10 +181,7 @@ app.post('/api/schemas/refresh', async (_req, res) => {
   if (tables.length === 0) { res.json({ updated: 0, tables: [] }); return }
 
   schemaRefreshing = true
-
   log.info('SCHEMA', `갱신 시작 — ${tables.length}개 테이블: ${tables.join(', ')}`)
-  schemaCache.clear()
-  schemaMeta.clear()
 
   const results: string[] = []
   const totalStart = Date.now()
@@ -193,8 +190,6 @@ app.post('/api/schemas/refresh', async (_req, res) => {
     const t0 = Date.now()
     try {
       const schema = await spawnDescribe(table)
-      const meta   = data[table]
-      if (meta?.label || meta?.domain) schemaMeta.set(table, { label: meta.label ?? table, domain: meta.domain ?? '기타' })
       results.push(table)
       log.info('SCHEMA', `[${i + 1}/${tables.length}] ${table} 완료 (${elapsed(t0)}초)`)
       data[table] = { ...data[table], schema, updatedAt: new Date().toISOString() }
@@ -205,7 +200,7 @@ app.post('/api/schemas/refresh', async (_req, res) => {
 
   log.info('SCHEMA', `갱신 완료 — ${results.length}/${tables.length}개 성공 (총 ${elapsed(totalStart)}초)`)
   try { fs.writeFileSync(SCHEMA_FILE, JSON.stringify(data, null, 2)) } catch { /* 무시 */ }
-  reloadFromSchemaFile()
+  reloadFromSchemaFile()   // schema.json → 인메모리 카탈로그 전체 재동기화
   schemaRefreshing = false
   res.json({ updated: results.length, tables: results })
 })
