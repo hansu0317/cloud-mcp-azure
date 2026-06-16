@@ -2,17 +2,16 @@ import { forwardRef, useImperativeHandle, useState, useCallback, useRef } from '
 import NotebookCell from './NotebookCell'
 import { streamChat, buildMessage } from '../api'
 import { API, APP_NAME } from '../constants'
-import type { Instructions, Cell, CellType, NotebookHandle, QueryLog } from '../types'
+import type { Instructions, Cell, NotebookHandle, QueryLog } from '../types'
 
 interface Props {
   sessionId:    string
   instructions: Instructions
   showToast:    (msg: string) => void
-  chatEndpoint?: string
 }
 
 const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
-  { sessionId, instructions, showToast, chatEndpoint = API.CHAT },
+  { sessionId, instructions, showToast },
   ref
 ) {
   const [cells, setCells] = useState<Cell[]>([])
@@ -22,9 +21,9 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
   const cellsRef       = useRef<Cell[]>(cells)
   cellsRef.current     = cells
 
-  const addCell = useCallback((type: CellType = 'ai', text = ''): number => {
+  const addCell = useCallback((text = ''): number => {
     const id = ++cellCounterRef.current
-    setCells(prev => [...prev, { id, type, text, output: null }])
+    setCells(prev => [...prev, { id, type: 'ai', text, output: null }])
     return id
   }, [])
 
@@ -42,14 +41,6 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
 
     const n = ++execCounterRef.current
 
-    if (cell.type === 'sql') {
-      setCells(prev => prev.map(c => c.id === id
-        ? { ...c, output: { loading: false, content: 'SQL 직접 실행은 아직 준비 중입니다.\nDB 커넥션 연결 후 사용 가능합니다.', error: true, rawContent: '', execN: n, toolName: null } }
-        : c
-      ))
-      return
-    }
-
     const acc = { current: '' }
     const qs: QueryLog[] = []
     setCells(prev => prev.map(c => c.id === id
@@ -61,8 +52,6 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
       await streamChat({
         message:  buildMessage(cell.text, sessionId, instructions),
         sessionId,
-        cellType: 'ai_cell',
-        endpoint: chatEndpoint,
         onText: (text) => {
           acc.current += text
           const snapshot = acc.current
@@ -145,7 +134,7 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
             <div className="welcome">
               <h2>{APP_NAME} AI Notebook</h2>
               <p>
-                자연어로 질문하거나 SQL을 직접 실행하세요 ·{' '}
+                자연어로 질문하면 Dataverse 데이터를 조회합니다 ·{' '}
                 <kbd style={{ background: '#1e2533', padding: '2px 6px', borderRadius: 3, fontSize: 11 }}>
                   Shift+Enter
                 </kbd>{' '}
@@ -164,8 +153,7 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
             />
           ))}
           <div className="add-bar">
-            <button className="btn" onClick={() => addCell('ai')}>＋ AI 셀 추가</button>
-            <button className="btn" onClick={() => addCell('sql')}>＋ SQL 셀 추가</button>
+            <button className="btn" onClick={() => addCell()}>＋ 셀 추가</button>
           </div>
         </div>
       </div>

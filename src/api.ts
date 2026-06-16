@@ -2,6 +2,7 @@ import { marked }     from 'marked'
 import DOMPurify      from 'dompurify'
 import { API } from './constants'
 import type { Instructions, StreamChatOptions } from './types'
+import type { SseEvent } from '../shared/types'
 
 export function renderMd(text: string): string {
   if (!text) return ''
@@ -39,13 +40,13 @@ export function buildMessage(question: string, sessionId: string, instructions: 
   return parts.length ? `${parts.join('\n')}\n\n${question}` : question
 }
 
-export async function streamChat(opts: StreamChatOptions & { endpoint?: string }): Promise<void> {
-  const { message, sessionId, cellType = 'chat', endpoint = API.CHAT, onText, onTool, onQuery, onDone, onError } = opts
+export async function streamChat(opts: StreamChatOptions): Promise<void> {
+  const { message, sessionId, onText, onTool, onQuery, onDone, onError } = opts
 
-  const resp = await fetch(endpoint, {
+  const resp = await fetch(API.CHAT, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ message, sessionId, cellType }),
+    body:    JSON.stringify({ message, sessionId }),
   })
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
 
@@ -61,13 +62,13 @@ export async function streamChat(opts: StreamChatOptions & { endpoint?: string }
     buf = lines.pop() ?? ''
     for (const line of lines) {
       if (!line.startsWith('data: ')) continue
-      let ev: { type: string; text?: string; name?: string; message?: string; tool?: string; input?: Record<string, unknown> }
-      try { ev = JSON.parse(line.slice(6)) } catch { continue }
-      if      (ev.type === 'text')  onText?.(ev.text ?? '')
-      else if (ev.type === 'tool')  onTool?.(ev.name ?? '')
-      else if (ev.type === 'query') onQuery?.(ev.tool ?? '', ev.input ?? {})
+      let ev: SseEvent
+      try { ev = JSON.parse(line.slice(6)) as SseEvent } catch { continue }
+      if      (ev.type === 'text')  onText?.(ev.text)
+      else if (ev.type === 'tool')  onTool?.(ev.name)
+      else if (ev.type === 'query') onQuery?.(ev.tool, ev.input)
       else if (ev.type === 'done')  onDone?.()
-      else if (ev.type === 'error') onError?.(ev.message ?? '')
+      else if (ev.type === 'error') onError?.(ev.message)
     }
   }
 }

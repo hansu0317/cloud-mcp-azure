@@ -29,14 +29,6 @@ export default function NotebookCell({ cell, onRun, onDelete, onTextChange, onEx
 
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); onRun() }
-    if (e.key === 'Tab' && cell.type === 'sql') {
-      e.preventDefault()
-      const ta = e.currentTarget
-      const s  = ta.selectionStart
-      const newText = cell.text.slice(0, s) + '  ' + cell.text.slice(ta.selectionEnd)
-      onTextChange(newText)
-      setTimeout(() => { ta.selectionStart = ta.selectionEnd = s + 2 }, 0)
-    }
   }
 
   const { output } = cell
@@ -46,7 +38,7 @@ export default function NotebookCell({ cell, onRun, onDelete, onTextChange, onEx
   return (
     <div className={`cell${isRunning ? ' running' : ''}${hasError ? ' has-error' : ''}`} id={`nb-cell-${cell.id}`}>
       <div className="cell-hdr">
-        <span className={`badge ${cell.type}`}>{cell.type === 'ai' ? 'AI' : 'SQL'}</span>
+        <span className="badge ai">AI</span>
         <span className="exec-num">
           {isRunning ? 'In [*]:' : output?.execN ? `In [${output.execN}]:` : 'In [ ]:'}
         </span>
@@ -55,29 +47,21 @@ export default function NotebookCell({ cell, onRun, onDelete, onTextChange, onEx
           {output?.rawContent && (
             <button className="btn btn-sm" onClick={onExport} title="내보내기">↓</button>
           )}
-          {cell.type === 'sql' ? (
-            <button className="btn btn-sm" disabled title="DB 커넥션 연결 후 사용 가능">🚧 준비 중</button>
-          ) : (
-            <button className="btn btn-sm" onClick={onRun} disabled={isRunning}>
-              {isRunning ? '⏳' : '▶ 실행'}
-            </button>
-          )}
+          <button className="btn btn-sm" onClick={onRun} disabled={isRunning}>
+            {isRunning ? '⏳' : '▶ 실행'}
+          </button>
           <button className="btn btn-sm danger" onClick={onDelete}>×</button>
         </div>
       </div>
 
-      <div className={`cell-in ${cell.type}`}>
+      <div className="cell-in ai">
         <textarea
           ref={taRef}
           className="cell-ta"
           value={cell.text}
           onChange={e => { onTextChange(e.target.value); autoResize(e.target) }}
           onKeyDown={handleKey}
-          placeholder={
-            cell.type === 'ai'
-              ? '자연어로 질문하세요 (예: 고객 TOP 5 보여줘)'
-              : 'SELECT * FROM table_name LIMIT 10\n-- ⚠️ DB 커넥션 연결 후 실행 가능'
-          }
+          placeholder="자연어로 질문하세요 (예: 고객 TOP 5 보여줘)"
           rows={2}
         />
       </div>
@@ -88,7 +72,7 @@ export default function NotebookCell({ cell, onRun, onDelete, onTextChange, onEx
             {isRunning && !output.content && !output.toolName && (
               <div className="running-row">
                 <div className="spinner" />
-                <span>{cell.type === 'ai' ? 'AI 분석 중...' : 'SQL 실행 중...'}</span>
+                <span>AI 분석 중...</span>
               </div>
             )}
             {output.toolName && !output.content && (
