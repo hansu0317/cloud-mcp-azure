@@ -1,7 +1,6 @@
 // 프론트엔드 전용 타입 + shared 타입 재수출
 
 export type {
-  CellType,
   Instructions, JoinDef, TermDef, ExampleDef,
   LogEntry, ServerStats,
 } from '../../shared/types'
@@ -19,7 +18,7 @@ export interface CellOutput {
 
 export interface Cell {
   id:     number
-  type:   import('../../shared/types').CellType
+  type:   'ai'
   text:   string
   output: CellOutput | null
 }
@@ -44,7 +43,7 @@ export interface Message {
 // 즐겨찾기
 export interface Bookmark {
   text: string
-  type: import('../../shared/types').CellType
+  type: 'ai'
   at:   string
 }
 
@@ -68,7 +67,6 @@ export interface TableMeta extends TableEntry {
 export interface StreamChatOptions {
   message:   string
   sessionId: string
-  cellType?: string
   onText?:   (text: string) => void
   onTool?:   (name: string) => void
   onQuery?:  (tool: string, input: Record<string, unknown>) => void
@@ -78,6 +76,6 @@ export interface StreamChatOptions {
 
 // NotebookView forwardRef 핸들
 export interface NotebookHandle {
-  addCell: (type: import('../../shared/types').CellType, text?: string) => number
+  addCell: (text?: string) => number
   runAll:  () => Promise<void>
 }

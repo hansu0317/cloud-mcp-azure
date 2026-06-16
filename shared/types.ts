@@ -1,6 +1,14 @@
 // 서버 ↔ 클라이언트 공유 타입
 
-export type CellType = 'ai' | 'sql'
+// SSE 스트리밍 이벤트 (서버 → 클라이언트)
+export type SseEvent =
+  | { type: 'text';  text: string }
+  | { type: 'tool';  name: string }
+  | { type: 'query'; tool: string; input: Record<string, unknown> }
+  | { type: 'error'; message: string }
+  | { type: 'done' }
+
+export type CellType = 'ai'
 
 // 지침 설정
 export interface JoinDef {

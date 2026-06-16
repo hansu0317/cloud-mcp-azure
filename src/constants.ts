@@ -1,11 +1,8 @@
 export const APP_NAME  = import.meta.env.VITE_APP_NAME  ?? 'CRM AI'
 export const CONN_NAME = import.meta.env.VITE_CONN_NAME ?? 'Cloud'
 
-export type LlmMode = 'claude' | 'groq'
-
 export const API = {
   CHAT:           '/api/chat',
-  GROQ_CHAT:      '/api/groq/chat',
   INSTRUCTIONS:   '/api/instructions',
   LOGS:           '/api/logs',
   STATS:          '/api/stats',
