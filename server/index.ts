@@ -91,8 +91,8 @@ const stats: ServerStats & { startTime: number } = {
 }
 
 interface SchemaEntry { label?: string; domain?: string; schema?: string; updatedAt?: string }
-const schemaCache     = new Map<string, string>()
-const schemaMeta      = new Map<string, { label: string; domain: string }>()
+const schemaCache     = new Map<string, string>()                              // 스키마 텍스트
+const schemaMeta      = new Map<string, { label: string; domain: string }>()   // 등록 테이블 전체
 const pendingDescribe = new Map<string, Promise<string>>()
 
 interface SessionEntry { claudeSessionId: string; lastUsed: number }
@@ -114,16 +114,19 @@ setInterval(() => {
   if (removed) log.info('SESSION', `세션 정리: ${removed}개 삭제 (현재: ${sessionMap.size})`)
 }, 60 * 60 * 1000).unref()
 
-// 스키마 파일 캐시 초기 로드
-;(function loadSchemaCache() {
+// schema.json → 인메모리 카탈로그 동기화 (기동 시 + 갱신 완료 후 공통 호출)
+function reloadFromSchemaFile(): void {
   const data = readJsonFile<Record<string, SchemaEntry>>(SCHEMA_FILE, {})
+  schemaCache.clear()
+  schemaMeta.clear()
   for (const [table, info] of Object.entries(data)) {
-    if (info?.schema) schemaCache.set(table, info.schema)
-    if (info?.label || info?.domain)
-      schemaMeta.set(table, { label: info.label ?? table, domain: info.domain ?? '기타' })
+    schemaMeta.set(table, { label: info.label ?? table, domain: info.domain ?? '기타' })
+    if (info.schema) schemaCache.set(table, info.schema)
   }
-  if (schemaCache.size) log.info('SCHEMA', `파일 캐시 로드: ${schemaCache.size}개 테이블`)
-})()
+  log.info('SCHEMA', `카탈로그 동기화: ${schemaMeta.size}개 테이블 (스키마 로드: ${schemaCache.size}개)`)
+}
+
+reloadFromSchemaFile()
 
 // 채팅 첫 메시지에 주입할 스키마 컨텍스트
 function buildSchemaContext(): string {
@@ -201,17 +204,17 @@ app.post('/api/schemas/refresh', async (_req, res) => {
   }
 
   log.info('SCHEMA', `갱신 완료 — ${results.length}/${tables.length}개 성공 (총 ${elapsed(totalStart)}초)`)
-  schemaRefreshing = false
   try { fs.writeFileSync(SCHEMA_FILE, JSON.stringify(data, null, 2)) } catch { /* 무시 */ }
+  reloadFromSchemaFile()
+  schemaRefreshing = false
   res.json({ updated: results.length, tables: results })
 })
 
 // ─── API: 테이블 목록 ─────────────────────────────────────────────────────────
 app.get('/api/tables', (_req, res) => {
-  const tables = [...schemaCache.keys()].map(name => {
-    const meta = schemaMeta.get(name)
-    return { name, label: meta?.label ?? name, domain: meta?.domain ?? '기타' }
-  })
+  const tables = [...schemaMeta.entries()].map(([name, meta]) => ({
+    name, label: meta.label, domain: meta.domain,
+  }))
   res.json({ tables })
 })
 
@@ -403,6 +406,9 @@ function spawnDescribe(table: string): Promise<string> {
       const existing = readJsonFile<Record<string, SchemaEntry>>(SCHEMA_FILE, {})
       existing[table] = { ...existing[table], schema: lastText, updatedAt: new Date().toISOString() }
       try { fs.writeFileSync(SCHEMA_FILE, JSON.stringify(existing, null, 2)) } catch { /* 무시 */ }
+      if (!schemaMeta.has(table)) {
+        schemaMeta.set(table, { label: existing[table].label ?? table, domain: existing[table].domain ?? '기타' })
+      }
       resolve(lastText)
     })
     claude.on('error', (err: Error) => { clearTimeout(timer); reject(err) })
