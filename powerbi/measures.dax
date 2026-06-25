@@ -1,0 +1,120 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Quali CRM — 영업기회(new_q3) DAX 측정값 라이브러리
+// 데이터 원본: Azure Dataverse (quali.crm5.dynamics.com)
+// 대상 테이블: new_q3 (영업기회), new_q1 (거래처), new_part (부품사용내역)
+//
+// 사용법: Power BI Desktop → 모델 보기 → 새 측정값에 아래 식을 복사
+//        선택값(CHOICE) 비교는 표시 텍스트(...name) 기준으로 작성했습니다.
+//        Dataverse 커넥터로 가져올 때 CHOICE 컬럼은 보통 "라벨" 열로 확장됩니다.
+//        실제 컬럼명이 다르면 new_p_mtype → new_p_mtypename 등으로 조정하세요.
+// ─────────────────────────────────────────────────────────────────────────────
+
+
+// ── 1. 기본 카운트 ───────────────────────────────────────────────────────────
+
+영업기회 수 :=
+COUNTROWS ( new_q3 )
+
+활성 영업기회 수 :=
+CALCULATE (
+    COUNTROWS ( new_q3 ),
+    new_q3[statecode] = 0
+)
+
+
+// ── 2. 금액 합계 ─────────────────────────────────────────────────────────────
+
+예상금액 합계 :=
+SUM ( new_q3[new_d_expectamt] )
+
+매출금액 합계 :=
+SUM ( new_q3[new_d_maechul] )
+
+이익금액 합계 :=
+SUM ( new_q3[new_d_profit] )
+
+부품 합계 :=
+SUM ( new_q3[new_d_partsum] )
+
+예측금액 합계 :=
+SUM ( new_q3[new_d_forecasting] )
+
+
+// ── 3. 수주/실패 & 승률 ──────────────────────────────────────────────────────
+
+수주(성공) 건수 :=
+CALCULATE (
+    COUNTROWS ( new_q3 ),
+    new_q3[new_p_resultname] = "성공"
+)
+
+실패 건수 :=
+CALCULATE (
+    COUNTROWS ( new_q3 ),
+    new_q3[new_p_resultname] = "실패"
+)
+
+결과확정 건수 :=
+[수주(성공) 건수] + [실패 건수]
+
+승률 :=
+DIVIDE ( [수주(성공) 건수], [결과확정 건수] )
+// 표시 형식: 백분율(%). 현재 실데이터 기준 7 / 34 ≈ 20.6%
+
+수주 매출액 :=
+CALCULATE (
+    [매출금액 합계],
+    new_q3[new_p_resultname] = "성공"
+)
+
+
+// ── 4. 파이프라인(가중 예측) ─────────────────────────────────────────────────
+// 성공확률(new_p_persent: "10%"~"100%")을 가중치로 곱한 가중 파이프라인.
+// 라벨에서 숫자만 추출해 0~1 비율로 환산합니다.
+
+성공확률(비율) :=
+VAR pct =
+    VALUE ( SUBSTITUTE ( SELECTEDVALUE ( new_q3[new_p_persentname], "0%" ), "%", "" ) )
+RETURN
+    DIVIDE ( pct, 100 )
+
+가중 파이프라인 :=
+SUMX (
+    FILTER ( new_q3, new_q3[new_p_resultname] <> "성공" && new_q3[new_p_resultname] <> "실패" ),
+    new_q3[new_d_expectamt]
+        * DIVIDE (
+            VALUE ( SUBSTITUTE ( COALESCE ( new_q3[new_p_persentname], "0%" ), "%", "" ) ),
+            100
+        )
+)
+
+
+// ── 5. 이익률 ────────────────────────────────────────────────────────────────
+
+평균 이익률 :=
+AVERAGE ( new_q3[new_i_profit] )
+
+전체 이익률 :=
+DIVIDE ( [이익금액 합계], [매출금액 합계] )
+
+
+// ── 6. 시간 인텔리전스 (createdon 기준) ──────────────────────────────────────
+// 별도 날짜 테이블(Calendar)을 만들고 new_q3[createdon]과 관계를 맺은 뒤 사용하세요.
+
+당월 영업기회 수 :=
+CALCULATE (
+    [영업기회 수],
+    DATESMTD ( 'Calendar'[Date] )
+)
+
+당월 예상금액 :=
+CALCULATE (
+    [예상금액 합계],
+    DATESMTD ( 'Calendar'[Date] )
+)
+
+전월 대비 예상금액 증감 :=
+VAR prev =
+    CALCULATE ( [예상금액 합계], DATEADD ( 'Calendar'[Date], -1, MONTH ) )
+RETURN
+    [예상금액 합계] - prev
