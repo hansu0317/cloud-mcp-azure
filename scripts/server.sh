@@ -17,6 +17,13 @@ case "$1" in
       echo "⚠️  서버가 이미 실행 중입니다. (PID: $(cat "$PID_FILE"))"
       exit 1
     fi
+    # 프론트엔드 빌드 (dist/) — tsx로 소스 직접 실행하므로 서버 빌드는 불필요
+    echo "🔨 프론트엔드 빌드 중..."
+    if ! ( cd "$APP_DIR" && npm run build:client ) >> "$LOG_FILE" 2>&1; then
+      echo "❌ 프론트엔드 빌드 실패. 로그를 확인하세요:"
+      tail -20 "$LOG_FILE"
+      exit 1
+    fi
     echo "▶  서버 시작 중..."
     nohup npx --prefix "$APP_DIR" tsx "$APP_DIR/server/index.ts" >> "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
