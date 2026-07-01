@@ -43,6 +43,18 @@ export default function NotebookCell({ cell, onRun, onDelete, onTextChange, onEx
           {isRunning ? 'In [*]:' : output?.execN ? `In [${output.execN}]:` : 'In [ ]:'}
         </span>
         <span className="cell-preview">{cell.text.slice(0, 70)}</span>
+        {output?.elapsedMs != null && !isRunning && (
+          <span
+            title="응답 소요시간"
+            style={{
+              marginLeft: 8, fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
+              background: cell.engine === 'api' ? 'rgba(14,116,144,.22)' : 'rgba(67,56,202,.22)',
+              color: cell.engine === 'api' ? '#22d3ee' : '#a5b4fc', whiteSpace: 'nowrap',
+            }}
+          >
+            {cell.engine === 'api' ? '⚡API' : '⌨CLI'} · {(output.elapsedMs / 1000).toFixed(1)}초
+          </span>
+        )}
         <div className="cell-acts">
           {output?.rawContent && (
             <button className="btn btn-sm" onClick={onExport} title="내보내기">↓</button>

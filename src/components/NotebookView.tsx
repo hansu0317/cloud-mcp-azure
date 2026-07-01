@@ -1,49 +1,63 @@
 import { forwardRef, useImperativeHandle, useState, useCallback, useRef } from 'react'
 import NotebookCell from './NotebookCell'
 import { streamChat, buildMessage } from '../api'
-import { API, APP_NAME } from '../constants'
-import type { Instructions, Cell, NotebookHandle, QueryLog } from '../types'
+import { APP_NAME } from '../constants'
+import type { Instructions, Cell, CellEngine, NotebookHandle, QueryLog, TimingEntry } from '../types'
 
 interface Props {
   sessionId:    string
+  engine:       CellEngine
   instructions: Instructions
   showToast:    (msg: string) => void
+  onTiming:     (entry: TimingEntry) => void
 }
 
 const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
-  { sessionId, instructions, showToast },
+  { sessionId, engine, instructions, showToast, onTiming },
   ref
 ) {
-  const [cells, setCells] = useState<Cell[]>([])
+  // 엔진(모드)별로 셀 리스트를 분리 보관 → 전환해도 서로 사라지지 않음
+  const [cellsByEngine, setCellsByEngine] = useState<Record<CellEngine, Cell[]>>({ cli: [], api: [] })
+  const cells = cellsByEngine[engine]
 
   const cellCounterRef = useRef(0)
   const execCounterRef = useRef(0)
-  const cellsRef       = useRef<Cell[]>(cells)
-  cellsRef.current     = cells
+  const stateRef       = useRef({ cellsByEngine, engine })
+  stateRef.current     = { cellsByEngine, engine }
+
+  // 현재 엔진 리스트만 갱신하는 헬퍼
+  const setActive = useCallback((updater: (prev: Cell[]) => Cell[]) => {
+    setCellsByEngine(prev => ({ ...prev, [engine]: updater(prev[engine]) }))
+  }, [engine])
 
   const addCell = useCallback((text = ''): number => {
     const id = ++cellCounterRef.current
-    setCells(prev => [...prev, { id, type: 'ai', text, output: null }])
+    setActive(prev => [...prev, { id, type: 'ai', engine, text, output: null }])
     return id
-  }, [])
+  }, [setActive, engine])
 
   const deleteCell = useCallback((id: number) => {
-    setCells(prev => prev.filter(c => c.id !== id))
-  }, [])
+    setActive(prev => prev.filter(c => c.id !== id))
+  }, [setActive])
 
   const updateText = useCallback((id: number, text: string) => {
-    setCells(prev => prev.map(c => c.id === id ? { ...c, text } : c))
-  }, [])
+    setActive(prev => prev.map(c => c.id === id ? { ...c, text } : c))
+  }, [setActive])
+
+  const clearActive = useCallback(() => {
+    setCellsByEngine(prev => ({ ...prev, [engine]: [] }))
+  }, [engine])
 
   const runCell = useCallback(async (id: number) => {
-    const cell = cellsRef.current.find(c => c.id === id)
+    const cell = stateRef.current.cellsByEngine[engine].find(c => c.id === id)
     if (!cell || !cell.text.trim()) return
 
     const n = ++execCounterRef.current
+    const t0 = Date.now()
 
     const acc = { current: '' }
     const qs: QueryLog[] = []
-    setCells(prev => prev.map(c => c.id === id
+    setActive(prev => prev.map(c => c.id === id
       ? { ...c, output: { loading: true, content: '', toolName: null, error: false, rawContent: '', execN: n, queries: [] } }
       : c
     ))
@@ -52,16 +66,17 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
       await streamChat({
         message:  buildMessage(cell.text, sessionId, instructions),
         sessionId,
+        engine,
         onText: (text) => {
           acc.current += text
           const snapshot = acc.current
-          setCells(prev => prev.map(c => c.id === id
+          setActive(prev => prev.map(c => c.id === id
             ? { ...c, output: { ...c.output!, loading: false, content: snapshot } }
             : c
           ))
         },
         onTool: (name) => {
-          setCells(prev => prev.map(c => c.id === id
+          setActive(prev => prev.map(c => c.id === id
             ? { ...c, output: { ...c.output!, toolName: name } }
             : c
           ))
@@ -69,41 +84,47 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
         onQuery: (tool, input) => {
           qs.push({ tool, input })
           const snapshot = [...qs]
-          setCells(prev => prev.map(c => c.id === id
+          setActive(prev => prev.map(c => c.id === id
             ? { ...c, output: { ...c.output!, queries: snapshot } }
             : c
           ))
         },
         onDone: () => {
           const rawContent = acc.current
-          setCells(prev => prev.map(c => c.id === id
-            ? { ...c, output: { ...c.output!, loading: false, rawContent, toolName: null, queries: [...qs] } }
+          const elapsedMs  = Date.now() - t0
+          setActive(prev => prev.map(c => c.id === id
+            ? { ...c, output: { ...c.output!, loading: false, rawContent, toolName: null, queries: [...qs], elapsedMs } }
             : c
           ))
+          onTiming({ time: new Date().toISOString(), engine, question: cell.text, elapsedMs, error: false })
         },
         onError: (msg) => {
-          setCells(prev => prev.map(c => c.id === id
-            ? { ...c, output: { loading: false, content: `오류: ${msg}`, error: true, rawContent: '', execN: n, toolName: null } }
+          const elapsedMs = Date.now() - t0
+          setActive(prev => prev.map(c => c.id === id
+            ? { ...c, output: { loading: false, content: `오류: ${msg}`, error: true, rawContent: '', execN: n, toolName: null, elapsedMs } }
             : c
           ))
+          onTiming({ time: new Date().toISOString(), engine, question: cell.text, elapsedMs, error: true })
         },
       })
     } catch (err) {
-      setCells(prev => prev.map(c => c.id === id
-        ? { ...c, output: { loading: false, content: `오류: ${(err as Error).message}`, error: true, rawContent: '', execN: n, toolName: null } }
+      const elapsedMs = Date.now() - t0
+      setActive(prev => prev.map(c => c.id === id
+        ? { ...c, output: { loading: false, content: `오류: ${(err as Error).message}`, error: true, rawContent: '', execN: n, toolName: null, elapsedMs } }
         : c
       ))
+      onTiming({ time: new Date().toISOString(), engine, question: cell.text, elapsedMs, error: true })
     }
-  }, [sessionId, instructions])
+  }, [sessionId, instructions, engine, setActive, onTiming])
 
   const runAll = useCallback(async () => {
-    for (const cell of cellsRef.current) {
+    for (const cell of stateRef.current.cellsByEngine[stateRef.current.engine]) {
       await runCell(cell.id)
     }
   }, [runCell])
 
   const handleExport = useCallback((id: number) => {
-    const cell = cellsRef.current.find(c => c.id === id)
+    const cell = stateRef.current.cellsByEngine[stateRef.current.engine].find(c => c.id === id)
     if (!cell?.output?.rawContent) { showToast('내보낼 데이터가 없습니다.'); return }
 
     const outEl = document.getElementById(`nb-out-${id}`)
@@ -124,7 +145,7 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
     }
   }, [showToast])
 
-  useImperativeHandle(ref, () => ({ addCell, runAll }), [addCell, runAll])
+  useImperativeHandle(ref, () => ({ addCell, runAll, clearActive }), [addCell, runAll, clearActive])
 
   return (
     <div className="notebook-view">
@@ -134,6 +155,7 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
             <div className="welcome">
               <h2>{APP_NAME} AI Notebook</h2>
               <p>
+                현재 모드: <strong>{engine === 'api' ? '⚡ Claude API' : '⌨ Claude Code CLI'}</strong> ·{' '}
                 자연어로 질문하면 Dataverse 데이터를 조회합니다 ·{' '}
                 <kbd style={{ background: '#1e2533', padding: '2px 6px', borderRadius: 3, fontSize: 11 }}>
                   Shift+Enter

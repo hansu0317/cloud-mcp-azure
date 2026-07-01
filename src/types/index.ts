@@ -14,11 +14,16 @@ export interface CellOutput {
   rawContent: string
   execN:      number
   queries?:   QueryLog[]
+  elapsedMs?: number   // 응답 소요시간 (Code/API 속도 비교용)
 }
+
+// 실행 엔진: 'cli' = Claude Code CLI(/api/chat), 'api' = Claude API(/api/chat-api)
+export type CellEngine = 'cli' | 'api'
 
 export interface Cell {
   id:     number
   type:   'ai'
+  engine: CellEngine
   text:   string
   output: CellOutput | null
 }
@@ -67,6 +72,8 @@ export interface TableMeta extends TableEntry {
 export interface StreamChatOptions {
   message:   string
   sessionId: string
+  engine?:   CellEngine   // 기본 'cli'
+
   onText?:   (text: string) => void
   onTool?:   (name: string) => void
   onQuery?:  (tool: string, input: Record<string, unknown>) => void
@@ -74,8 +81,18 @@ export interface StreamChatOptions {
   onError?:  (message: string) => void
 }
 
+// 속도 비교 기록 (Code/API 질문→완전한 답변 표시까지 걸린 시간)
+export interface TimingEntry {
+  time:      string   // ISO
+  engine:    CellEngine
+  question:  string
+  elapsedMs: number
+  error:     boolean
+}
+
 // NotebookView forwardRef 핸들
 export interface NotebookHandle {
-  addCell: (text?: string) => number
-  runAll:  () => Promise<void>
+  addCell:     (text?: string) => number
+  runAll:      () => Promise<void>
+  clearActive: () => void   // 현재 엔진(모드)의 셀만 초기화
 }
