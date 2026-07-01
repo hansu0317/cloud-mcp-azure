@@ -8,6 +8,7 @@ import fs                   from 'fs'
 import log                  from './logger'
 import { setupSse, HttpStatus } from './sse'
 import { CLAUDE_BIN, buildClaudeArgs } from './claude'
+import { fetchEntitySchema, dataverseEnvMissing, buildCompactCatalog, type SchemaEntry } from './dataverse'
 import type { Instructions, LogEntry, ServerStats } from '../shared/types'
 
 // ─── 보안: Azure Dataverse 쓰기 도구 차단 목록 ────────────────────────────────
@@ -28,7 +29,6 @@ const WRITE_TOOLS = new Set([
 // ─── 환경변수 ─────────────────────────────────────────────────────────────────
 const PORT                = parseInt(process.env.PORT                  ?? '3000')
 const CHAT_TIMEOUT_MS     = parseInt(process.env.CHAT_TIMEOUT_MS       ?? '120000')
-const DESCRIBE_TIMEOUT_MS = parseInt(process.env.DESCRIBE_TIMEOUT_MS   ?? '60000')
 const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS   ?? '30000')
 const RL_WINDOW_MS        = parseInt(process.env.RATE_LIMIT_WINDOW_MS  ?? '60000')
 const RL_MAX              = parseInt(process.env.RATE_LIMIT_MAX        ?? '20')
@@ -90,7 +90,6 @@ const stats: ServerStats & { startTime: number } = {
   securityBlocks: 0, uptime: 0, activeSessions: 0,
 }
 
-interface SchemaEntry { label?: string; domain?: string; schema?: string; updatedAt?: string }
 const schemaCache     = new Map<string, string>()                              // 스키마 텍스트
 const schemaMeta      = new Map<string, { label: string; domain: string }>()   // 등록 테이블 전체
 const pendingDescribe = new Map<string, Promise<string>>()
@@ -128,16 +127,20 @@ function reloadFromSchemaFile(): void {
 
 reloadFromSchemaFile()
 
-// 채팅 첫 메시지에 주입할 스키마 컨텍스트
+// 채팅 첫 메시지에 주입할 스키마 컨텍스트 — 전체 컬럼을 다 넣지 않고 "카탈로그"만
+// 제공한다(테이블 수가 늘수록 컨텍스트가 수만 자로 불어나는 것을 방지). 실제 컬럼이
+// 필요한 테이블은 Claude가 describe 도구를 직접 호출해 그때그때 조회한다.
 function buildSchemaContext(): string {
-  if (schemaCache.size === 0) return ''
-  const lines = ['[Dataverse 테이블 스키마 — 아래 정보를 기반으로 OData 쿼리를 작성하세요]']
-  for (const [table, schema] of schemaCache) {
-    const meta = schemaMeta.get(table)
-    lines.push(`\n## ${table}${meta ? ` (${meta.label})` : ''}`)
-    lines.push(schema)
-  }
-  return lines.join('\n')
+  const data = readJsonFile<Record<string, SchemaEntry>>(SCHEMA_FILE, {})
+  const catalog = buildCompactCatalog(data)
+  if (!catalog) return ''
+  return [
+    '[Dataverse 테이블 카탈로그]',
+    catalog,
+    '',
+    '쿼리를 작성하기 전, 위 테이블 중 실제로 필요한 테이블의 정확한 컬럼명을 모른다면',
+    '먼저 describe 도구로 해당 테이블을 조회한 뒤 OData 쿼리를 작성하세요.',
+  ].join('\n')
 }
 
 // ─── Express ──────────────────────────────────────────────────────────────────
@@ -181,25 +184,29 @@ app.post('/api/schemas/refresh', async (_req, res) => {
   if (tables.length === 0) { res.json({ updated: 0, tables: [] }); return }
 
   schemaRefreshing = true
-  log.info('SCHEMA', `갱신 시작 — ${tables.length}개 테이블: ${tables.join(', ')}`)
+  log.info('SCHEMA', `갱신 시작 — ${tables.length}개 테이블 배치 병렬 조회(Dataverse REST, LLM 미사용): ${tables.join(', ')}`)
 
-  const results: string[] = []
   const totalStart = Date.now()
-  for (const [i, table] of tables.entries()) {
-    log.info('SCHEMA', `[${i + 1}/${tables.length}] ${table} 조회 중…`)
-    const t0 = Date.now()
-    try {
-      const schema = await spawnDescribe(table)
-      results.push(table)
-      log.info('SCHEMA', `[${i + 1}/${tables.length}] ${table} 완료 (${elapsed(t0)}초)`)
-      data[table] = { ...data[table], schema, updatedAt: new Date().toISOString() }
-    } catch (e) {
-      log.error('SCHEMA', `[${i + 1}/${tables.length}] ${table} 실패 (${elapsed(t0)}초)`, { error: String(e) })
-    }
+  const REFRESH_BATCH_SIZE = 6   // 한꺼번에 전체 병렬 호출 시 커넥션 과부하로 간헐적 fetch 실패 발생 → 배치로 제한
+  const outcomes: PromiseSettledResult<void>[] = []
+  // describeTable()이 테이블별로 schema.json에 직접 저장하므로 여기서 별도 파일 쓰기는 하지 않음
+  // (하지 않으면 이 시점의 낡은 스냅샷으로 entitySetName 등이 덮어써질 수 있음).
+  for (let i = 0; i < tables.length; i += REFRESH_BATCH_SIZE) {
+    const batch = tables.slice(i, i + REFRESH_BATCH_SIZE)
+    const batchOutcomes = await Promise.allSettled(batch.map(async table => {
+      const t0 = Date.now()
+      await describeTable(table)
+      log.info('SCHEMA', `${table} 완료 (${elapsed(t0)}초)`)
+    }))
+    outcomes.push(...batchOutcomes)
   }
 
+  const results = tables.filter((_, i) => outcomes[i].status === 'fulfilled')
+  outcomes.forEach((o, i) => {
+    if (o.status === 'rejected') log.error('SCHEMA', `${tables[i]} 실패`, { error: String(o.reason) })
+  })
+
   log.info('SCHEMA', `갱신 완료 — ${results.length}/${tables.length}개 성공 (총 ${elapsed(totalStart)}초)`)
-  try { fs.writeFileSync(SCHEMA_FILE, JSON.stringify(data, null, 2)) } catch { /* 무시 */ }
   reloadFromSchemaFile()   // schema.json → 인메모리 카탈로그 전체 재동기화
   schemaRefreshing = false
   res.json({ updated: results.length, tables: results })
@@ -322,7 +329,7 @@ app.post('/api/chat', async (req, res) => {
               const toolInput  = (block.input ?? {}) as Record<string, unknown>
               queryLog.push({ tool: toolName, input: toolInput })
               const queryPreview = String(toolInput.querytext ?? toolInput.fetchXml ?? JSON.stringify(toolInput))
-              log.info('쿼리', `[${toolName}] ${queryPreview.slice(0, 200)}`)
+              log.info('쿼리', `[${toolName}] ${queryPreview.slice(0, 100)}`)
               send({ type: 'tool', name: toolName })
               if (Object.keys(toolInput).length > 0) send({ type: 'query', tool: toolName, input: toolInput })
             }
@@ -365,49 +372,21 @@ app.post('/api/chat', async (req, res) => {
   res.on('close', () => { cleanup(); if (!claude.killed) claude.kill() })
 })
 
-// ─── 테이블 스키마 describe (Claude Code → mcp__dataverse__describe) ──────────
-function spawnDescribe(table: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const prompt = `Dataverse 테이블 "${table}"을 describe 도구로 조회한 뒤, 주요 컬럼명·타입·한국어 설명을 마크다운 표로 간결하게 정리해줘. 표만 출력해.`
-    const claude = spawn(
-      CLAUDE_BIN,
-      buildClaudeArgs(prompt, { allowedTools: 'mcp__dataverse__describe' }),
-      { cwd: CWD, shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: process.env }
-    )
+// ─── 테이블 스키마 조회 (Dataverse Web API EntityDefinitions 직접 호출 — LLM/CLI 미사용) ──
+async function describeTable(table: string): Promise<string> {
+  const missing = dataverseEnvMissing()
+  if (missing) throw new Error(`${missing} 환경변수가 설정되지 않았습니다. (.env 확인)`)
 
-    let lastText = '', buf = ''
-    claude.stdout.setEncoding('utf8')
-    claude.stdout.on('data', (chunk: string) => {
-      buf += chunk
-      const lines = buf.split('\n'); buf = lines.pop() ?? ''
-      for (const line of lines) {
-        try {
-          const ev = JSON.parse(line.trim()) as Record<string, unknown>
-          if (ev.type === 'assistant') {
-            for (const block of ((ev.message as Record<string, unknown>)?.content as Array<Record<string, unknown>> ?? [])) {
-              if (block.type === 'text' && (block.text as string).length > lastText.length)
-                lastText = block.text as string
-            }
-          }
-        } catch { /* 무시 */ }
-      }
-    })
+  const { entitySetName, markdown } = await fetchEntitySchema(table)
 
-    const timer = setTimeout(() => { if (!claude.killed) claude.kill() }, DESCRIBE_TIMEOUT_MS)
-    claude.on('close', () => {
-      clearTimeout(timer)
-      if (!lastText) { reject(new Error('스키마 조회 결과가 없습니다.')); return }
-      schemaCache.set(table, lastText)
-      const existing = readJsonFile<Record<string, SchemaEntry>>(SCHEMA_FILE, {})
-      existing[table] = { ...existing[table], schema: lastText, updatedAt: new Date().toISOString() }
-      try { fs.writeFileSync(SCHEMA_FILE, JSON.stringify(existing, null, 2)) } catch { /* 무시 */ }
-      if (!schemaMeta.has(table)) {
-        schemaMeta.set(table, { label: existing[table].label ?? table, domain: existing[table].domain ?? '기타' })
-      }
-      resolve(lastText)
-    })
-    claude.on('error', (err: Error) => { clearTimeout(timer); reject(err) })
-  })
+  schemaCache.set(table, markdown)
+  const existing = readJsonFile<Record<string, SchemaEntry>>(SCHEMA_FILE, {})
+  existing[table] = { ...existing[table], schema: markdown, entitySetName, updatedAt: new Date().toISOString() }
+  try { fs.writeFileSync(SCHEMA_FILE, JSON.stringify(existing, null, 2)) } catch { /* 무시 */ }
+  if (!schemaMeta.has(table)) {
+    schemaMeta.set(table, { label: existing[table].label ?? table, domain: existing[table].domain ?? '기타' })
+  }
+  return markdown
 }
 
 // ─── API: 테이블 스키마 describe ─────────────────────────────────────────────
@@ -418,7 +397,7 @@ app.get('/api/describe', (req, res) => {
 
   // 동일 테이블 동시 요청은 하나의 프로세스에 합류
   const pending = pendingDescribe.get(table)
-  const p = pending ?? spawnDescribe(table)
+  const p = pending ?? describeTable(table)
   if (!pending) {
     pendingDescribe.set(table, p)
     p.finally(() => pendingDescribe.delete(table))
@@ -473,6 +452,13 @@ app.get('/api/logs', (req, res) => {
     res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ error: (err as Error).message })
   }
 })
+
+// ─── Claude API 경로(선택 추가) ───────────────────────────────────────────────
+// @anthropic-ai/sdk 미설치·오류 시 조용히 건너뜀 → 기존 CLI 경로는 영향 없음.
+// POST /api/chat-api 이므로 아래 GET '*' 폴백보다 늦게 등록돼도 정상 동작함.
+import('../claudeapi/chat-api')
+  .then(m => m.registerChatApi(app))
+  .catch(() => log.info('SERVER', 'Claude API 경로 비활성(의존성 미설치/오류) — CLI 경로만 사용'))
 
 // ─── SPA 폴백 ─────────────────────────────────────────────────────────────────
 app.get('*', (_req, res) => {
