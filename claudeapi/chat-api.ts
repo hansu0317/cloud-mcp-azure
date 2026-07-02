@@ -54,9 +54,42 @@ function readSchemaFile(): Record<string, SchemaEntry> {
   catch { return {} }
 }
 
-// 데이터 조회용 GET — 공용 dataverseGet(원문 텍스트) 위에 컨텍스트 절약용 truncate만 추가
+// ─── OData 쿼리 가드 — 모델이 생성한 경로를 무검증 실행하지 않는다 ────────────
+// 1) 엔티티집합명 화이트리스트: schema.json에 등록된 테이블만 조회 허용
+//    (환각으로 만든 경로·등록 외 테이블 접근을 원천 차단, 위반 시 tool_result
+//     오류로 돌려보내 모델이 카탈로그 기준으로 자가 수정하게 한다)
+// 2) $top 상한: 목록 조회에 $top이 없으면 100을 강제해 무제한 전체 조회로 인한
+//    Dataverse 부하·응답 비대를 방지 (집계 $apply/$count·단건 조회는 제외)
+function allowedEntitySets(): Set<string> {
+  const sets = new Set<string>()
+  for (const info of Object.values(readSchemaFile())) {
+    if (info.entitySetName) sets.add(info.entitySetName)
+  }
+  return sets
+}
+
+function guardODataPath(relPath: string): string {
+  const clean = relPath.replace(/^\/+/, '')
+  const entitySet = /^([A-Za-z_][A-Za-z0-9_]*)/.exec(clean)?.[1] ?? ''
+  const allowed = allowedEntitySets()
+  if (allowed.size > 0 && !allowed.has(entitySet)) {
+    throw new Error(`허용되지 않은 엔티티 집합명 "${entitySet}"입니다. 카탈로그에 표시된 엔티티집합명을 그대로 사용하세요.`)
+  }
+
+  const qIdx = clean.indexOf('?')
+  const resource = qIdx === -1 ? clean : clean.slice(0, qIdx)
+  const query    = qIdx === -1 ? ''    : clean.slice(qIdx + 1)
+  const isCollection = !resource.includes('(') && !resource.includes('$count')
+  if (isCollection && !/(^|&)\$top=/.test(query) && !/(^|&)\$apply=/.test(query) && !/(^|&)\$count=/.test(query)) {
+    const withTop = query ? `${query}&$top=100` : '$top=100'
+    return `${resource}?${withTop}`
+  }
+  return clean
+}
+
+// 데이터 조회용 GET — 가드 통과 후 공용 dataverseGet(원문 텍스트) + 컨텍스트 절약용 truncate
 async function dataverseQuery(relPath: string): Promise<string> {
-  const text = await dataverseGet(relPath)
+  const text = await dataverseGet(guardODataPath(relPath))
   try {
     const json = JSON.parse(text) as { value?: unknown[] }
     if (Array.isArray(json.value)) return JSON.stringify(json.value.slice(0, 100))
@@ -150,6 +183,27 @@ function trimHistory(msgs: Msg[]): Msg[] {
   return msgs
 }
 
+// describe 결과 히스토리 컴팩션 — 테이블 하나당 수 KB인 스키마 조회 결과가 대화
+// 기록에 그대로 쌓이면 매 요청 입력 토큰이 턴마다 급증한다(실측: 2턴 만에 2배+).
+// 답변 생성에 쓰인 직후에는 더 이상 원문이 필요 없고, schema.json 로컬 캐시 조회라
+// 다시 필요하면 모델이 재호출해도 비용이 0이므로, 저장 시점에 placeholder로 치환한다.
+const DESCRIBE_PLACEHOLDER = '(스키마 조회 결과 생략 — 필요하면 dataverse_describe_table을 다시 호출하세요)'
+
+function compactDescribeResults(msgs: Msg[], describeIds: Set<string>): number {
+  if (describeIds.size === 0) return 0
+  let compacted = 0
+  for (const m of msgs) {
+    if (m.role !== 'user' || !Array.isArray(m.content)) continue
+    for (const block of m.content) {
+      if (typeof block === 'object' && block.type === 'tool_result' && describeIds.has(block.tool_use_id)) {
+        block.content = DESCRIBE_PLACEHOLDER
+        compacted++
+      }
+    }
+  }
+  return compacted
+}
+
 setInterval(() => {
   const cutoff = Date.now() - SESSION_TTL_MS
   let removed = 0
@@ -211,6 +265,7 @@ export function registerChatApi(app: Express): void {
     let answerText = ''
     let queryCount = 0
     let inTok = 0, outTok = 0, cacheReadTok = 0, cacheWriteTok = 0
+    const describeIds = new Set<string>()   // 이번 요청의 describe 호출 — 저장 시 결과 컴팩션 대상
 
     try {
       // ── 도구 사용 루프 (커스텀 도구는 서버가 직접 실행) ──
@@ -272,6 +327,7 @@ export function registerChatApi(app: Express): void {
             if (tu.name === 'dataverse_describe_table') {
               const table = (tu.input as { table?: string }).table ?? ''
               const out = describeTableFromCache(table)   // 캐시 조회 — 네트워크 호출 없음
+              describeIds.add(tu.id)
               results.push({ type: 'tool_result', tool_use_id: tu.id, content: out })
             } else {
               const p = (tu.input as { path?: string }).path ?? ''
@@ -285,6 +341,8 @@ export function registerChatApi(app: Express): void {
         history.push({ role: 'user', content: results })
       }
 
+      const compacted = compactDescribeResults(history, describeIds)   // 답변 완료 후 스키마 원문은 히스토리에서 제거
+      if (compacted > 0) log.info('API-컴팩션', `스키마 조회 결과 ${compacted}건 히스토리에서 생략 처리`)
       session.messages = trimHistory(history)
       session.lastUsed = Date.now()
       historyMap.set(sessionId, session)
