@@ -13,10 +13,17 @@
 // 넣는다. 실제 컬럼 목록이 필요한 테이블은 dataverse_describe_table 도구로 Claude가
 // 직접 골라서 조회한다(schema.json 캐시 조회 — 네트워크 호출 없음, 즉시 응답).
 //
+// 동시성/타임아웃/세션 정리는 CLI 모드(server/index.ts)와 같은 정책·같은 환경변수를
+// 공유한다 — 운영자가 두 모드를 서로 다르게 튜닝할 필요가 없도록 하기 위함.
+//
 // 필요 환경변수 (루트 .env):
 //   ANTHROPIC_API_KEY        — Anthropic API 키 (필수)
 //   DATAVERSE_TENANT_ID / DATAVERSE_CLIENT_ID / DATAVERSE_CLIENT_SECRET / DATAVERSE_URL
 //   ANTHROPIC_MODEL          — 기본값 claude-haiku-4-5 (데모 속도 우선)
+//   MAX_CONCURRENT_API       — 기본값 10 (동시 Claude API 스트림 수. CLI보다 높은 이유는
+//                              OS 프로세스가 아니라 HTTP 연결이라 자원 비용이 훨씬 낮기 때문)
+//   CHAT_TIMEOUT_MS          — 기본값 120000. CLI 모드와 동일 변수를 공유
+//   MAX_SESSIONS             — 기본값 200. CLI 모드와 동일 변수를 공유(세션 정리 상한)
 // ─────────────────────────────────────────────────────────────────────────────
 import 'dotenv/config'
 import type { Express, Request, Response } from 'express'
@@ -26,14 +33,21 @@ import Anthropic from '@anthropic-ai/sdk'
 import { setupSse, HttpStatus } from '../server/sse'
 import log from '../server/logger'
 import { dataverseGet, dataverseEnvMissing, buildCompactCatalog, type SchemaEntry } from '../server/dataverse'
+import { Semaphore } from '../server/semaphore'
 
 // ─── 설정 ─────────────────────────────────────────────────────────────────────
-const MODEL      = process.env.ANTHROPIC_MODEL      ?? 'claude-haiku-4-5'
-const MAX_TOKENS = parseInt(process.env.ANTHROPIC_MAX_TOKENS ?? '4096')
+const MODEL         = process.env.ANTHROPIC_MODEL         ?? 'claude-haiku-4-5'
+const MAX_TOKENS    = parseInt(process.env.ANTHROPIC_MAX_TOKENS ?? '4096')
+const MAX_CONCURRENT_API = parseInt(process.env.MAX_CONCURRENT_API ?? '10')
+const CHAT_TIMEOUT_MS    = parseInt(process.env.CHAT_TIMEOUT_MS    ?? '120000')   // CLI와 공유
+const MAX_SESSIONS       = parseInt(process.env.MAX_SESSIONS       ?? '200')      // CLI와 공유
 const MAX_TOOL_LOOPS = 6
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000   // CLI 모드와 동일 정책
 
 const CWD         = process.cwd()
 const SCHEMA_FILE = path.join(CWD, 'data', 'schema.json')
+
+const apiSemaphore = new Semaphore(MAX_CONCURRENT_API)
 
 function readSchemaFile(): Record<string, SchemaEntry> {
   try { return JSON.parse(fs.readFileSync(SCHEMA_FILE, 'utf8')) as Record<string, SchemaEntry> }
@@ -50,7 +64,10 @@ async function dataverseQuery(relPath: string): Promise<string> {
   return text.slice(0, 8000)
 }
 
-// ─── 시스템 프롬프트(카탈로그 + 규칙) — prompt caching 대상, 전체 컬럼은 넣지 않음 ──
+// ─── 시스템 프롬프트(카탈로그 + 규칙) — 요청마다 새로 빌드 ────────────────────
+// schema.json은 스키마 갱신 버튼으로 언제든 바뀔 수 있다. 서버 기동 시 1회만 빌드해
+// 캐싱하면 갱신 후에도 재시작 전까지 낡은 카탈로그를 계속 보내는 문제가 생기므로,
+// 매 요청 로컬 파일을 다시 읽어 빌드한다(카탈로그가 작아 비용은 무시할 수준).
 function buildSystemPrompt(): string {
   const catalog = buildCompactCatalog(readSchemaFile())
   return [
@@ -110,20 +127,56 @@ function describeTableFromCache(table: string): string {
   return `## ${table}${entry.label ? ` (${entry.label})` : ''}${setName}\n${entry.schema}`
 }
 
-// ─── 세션별 대화 히스토리 (인메모리, 데모용) ─────────────────────────────────
+// ─── 세션별 대화 히스토리 (인메모리, TTL/상한 정리 — CLI 모드 sessionMap과 동일 정책) ──
 type Msg = Anthropic.MessageParam
-const historyMap = new Map<string, Msg[]>()
+interface HistorySession { messages: Msg[]; lastUsed: number }
+const historyMap = new Map<string, HistorySession>()
 const MAX_TURNS  = 20
+
+// 히스토리 상한 트리밍 — 단순 slice(-N)은 assistant(tool_use) ↔ user(tool_result) 쌍의
+// 중간을 자를 수 있고, 그러면 이후 모든 요청이 API 400으로 실패한다(세션 영구 파손).
+// 반드시 "일반 텍스트 user 메시지"(새 질문 시작점) 경계에서만 자른다.
+function trimHistory(msgs: Msg[]): Msg[] {
+  if (msgs.length <= MAX_TURNS) return msgs
+  for (let i = msgs.length - MAX_TURNS; i < msgs.length; i++) {
+    const m = msgs[i]
+    if (m.role === 'user' && typeof m.content === 'string') return msgs.slice(i)
+  }
+  // 상한 범위 안에 질문 경계가 없으면(한 턴이 비정상적으로 긴 경우) 마지막 질문부터 유지
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]
+    if (m.role === 'user' && typeof m.content === 'string') return msgs.slice(i)
+  }
+  return msgs
+}
+
+setInterval(() => {
+  const cutoff = Date.now() - SESSION_TTL_MS
+  let removed = 0
+  for (const [id, entry] of historyMap) {
+    if (entry.lastUsed < cutoff) { historyMap.delete(id); removed++ }
+  }
+  if (historyMap.size > MAX_SESSIONS) {
+    const sorted = [...historyMap.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed)
+    const excess = historyMap.size - MAX_SESSIONS
+    for (let i = 0; i < excess; i++) { historyMap.delete(sorted[i][0]); removed++ }
+  }
+  if (removed) log.info('API-세션', `세션 정리: ${removed}개 삭제 (현재: ${historyMap.size})`)
+}, 60 * 60 * 1000).unref()
 
 // ─── 라우트 등록 ──────────────────────────────────────────────────────────────
 export function registerChatApi(app: Express): void {
   const client = new Anthropic()   // ANTHROPIC_API_KEY 환경변수 사용
-  const SYSTEM_PROMPT = buildSystemPrompt()
 
   app.post('/api/chat-api', async (req: Request, res: Response) => {
     const { message, sessionId } = req.body as { message: string; sessionId: string }
     if (!message || !sessionId) {
       res.status(HttpStatus.BAD_REQUEST).json({ error: 'message와 sessionId가 필요합니다.' })
+      return
+    }
+
+    if (apiSemaphore.isOverloaded()) {
+      res.status(HttpStatus.TOO_MANY_REQUESTS).json({ error: '현재 요청이 많습니다. 잠시 후 다시 시도하세요.' })
       return
     }
 
@@ -136,14 +189,28 @@ export function registerChatApi(app: Express): void {
       return
     }
 
-    const history = historyMap.get(sessionId) ?? []
-    history.push({ role: 'user', content: message })
+    await apiSemaphore.acquire()
+    let semReleased = false
+    const releaseSem = () => { if (!semReleased) { semReleased = true; apiSemaphore.release() } }
+
+    // 브라우저 연결이 끊기면 Anthropic 스트림도 즉시 취소 (CLI 모드의 claude.kill()과 동일 역할)
+    const abortController = new AbortController()
+    res.on('close', () => abortController.abort())
+
+    const session = historyMap.get(sessionId) ?? { messages: [], lastUsed: Date.now() }
+    // 에러 시 이 지점으로 롤백 — 반쪽 히스토리(tool_result 없는 tool_use 등)가 저장되면
+    // 그 세션의 이후 요청이 전부 400으로 실패하므로, 실패한 요청의 흔적은 통째로 버린다.
+    const rollbackLen = session.messages.length
+    session.messages.push({ role: 'user', content: message })
+    session.lastUsed = Date.now()
+    const history = session.messages
 
     const startMs = Date.now()
     log.info('API-질문', message.slice(0, 200))
 
     let answerText = ''
     let queryCount = 0
+    let inTok = 0, outTok = 0, cacheReadTok = 0, cacheWriteTok = 0
 
     try {
       // ── 도구 사용 루프 (커스텀 도구는 서버가 직접 실행) ──
@@ -153,10 +220,10 @@ export function registerChatApi(app: Express): void {
         const stream = client.messages.stream({
           model:      MODEL,
           max_tokens: MAX_TOKENS,
-          system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+          system: [{ type: 'text', text: buildSystemPrompt(), cache_control: { type: 'ephemeral' } }],
           messages: history,
           tools:    [DATAVERSE_QUERY_TOOL, DESCRIBE_TABLE_TOOL],
-        })
+        }, { timeout: CHAT_TIMEOUT_MS, signal: abortController.signal })
 
         for await (const ev of stream) {
           if (ev.type === 'content_block_start' && ev.content_block.type === 'tool_use') {
@@ -188,6 +255,11 @@ export function registerChatApi(app: Express): void {
         const final = await stream.finalMessage()
         history.push({ role: 'assistant', content: final.content })
 
+        inTok        += final.usage.input_tokens
+        outTok       += final.usage.output_tokens
+        cacheReadTok  += final.usage.cache_read_input_tokens ?? 0
+        cacheWriteTok += final.usage.cache_creation_input_tokens ?? 0
+
         const toolUses = final.content.filter(
           (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
         )
@@ -213,18 +285,26 @@ export function registerChatApi(app: Express): void {
         history.push({ role: 'user', content: results })
       }
 
-      historyMap.set(sessionId, history.slice(-MAX_TURNS))
+      session.messages = trimHistory(history)
+      session.lastUsed = Date.now()
+      historyMap.set(sessionId, session)
+
       const elapsed = ((Date.now() - startMs) / 1000).toFixed(1)
-      log.info('API-답변', `${answerText.slice(0, 300)} (${elapsed}초, 쿼리 ${queryCount}회)`)
+      log.info('API-답변', `${answerText.slice(0, 300)} (${elapsed}초, 쿼리 ${queryCount}회, `
+        + `토큰 in:${inTok} out:${outTok} cache_read:${cacheReadTok} cache_write:${cacheWriteTok})`)
       send({ type: 'done' })
     } catch (err) {
+      // 실패한 요청의 반쪽 히스토리를 제거해 세션을 이전 정상 상태로 복원
+      session.messages.length = rollbackLen
       const msg = (err as Error).message
       log.error('API-오류', msg.slice(0, 300), { sessionId })
       send({ type: 'error', message: `Claude API 오류: ${msg}` })
     } finally {
+      releaseSem()
       if (!res.writableEnded) res.end()
     }
   })
 
-  log.info('SERVER', `Claude API 엔드포인트 등록됨 — POST /api/chat-api (model: ${MODEL}, Dataverse Web API 직접, 컴팩트 카탈로그)`)
+  log.info('SERVER', `Claude API 엔드포인트 등록됨 — POST /api/chat-api `
+    + `(model: ${MODEL}, 동시 ${MAX_CONCURRENT_API}, 타임아웃 ${CHAT_TIMEOUT_MS / 1000}s)`)
 }

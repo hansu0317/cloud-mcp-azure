@@ -74,22 +74,32 @@ export async function dataverseFetch(relPath: string): Promise<Response> {
 }
 
 // ─── 데이터 조회용 GET (텍스트 반환, 호출측에서 truncate 등 가공) ────────────
-// 다건 병렬 호출 시 커넥션 레벨(TypeError: fetch failed 등) 순간 오류가 드물게
-// 발생 — HTTP 오류(4xx/5xx)는 그대로 던지고, 네트워크 레벨 실패만 1회 재시도.
+// 자가 복구 2종:
+//  - 네트워크 레벨(TypeError: fetch failed 등) 순간 오류 → 300ms 후 1회 재시도
+//  - 401 Unauthorized(시크릿 로테이션·토큰 조기 폐기 등) → 토큰 캐시 무효화 후 1회 재발급 재시도
+// 그 외 HTTP 오류(404/400/5xx)는 그대로 던져 호출측(모델의 tool_result)에 전달한다.
 export async function dataverseGet(relPath: string): Promise<string> {
-  try {
+  const attempt = async () => {
     const resp = await dataverseFetch(relPath)
-    const text = await resp.text()
-    if (!resp.ok) throw new Error(`OData ${resp.status}: ${text.slice(0, 300)}`)
-    return text
-  } catch (e) {
-    if (!(e instanceof TypeError)) throw e   // HTTP 상태 오류 등은 재시도하지 않음
-    await new Promise(r => setTimeout(r, 300))
-    const resp = await dataverseFetch(relPath)
-    const text = await resp.text()
-    if (!resp.ok) throw new Error(`OData ${resp.status}: ${text.slice(0, 300)}`)
-    return text
+    return { resp, text: await resp.text() }
   }
+
+  let r: { resp: Response; text: string }
+  try {
+    r = await attempt()
+  } catch (e) {
+    if (!(e instanceof TypeError)) throw e   // 네트워크 레벨 실패만 재시도
+    await new Promise(res => setTimeout(res, 300))
+    r = await attempt()
+  }
+
+  if (r.resp.status === 401) {
+    tokenCache = null   // 캐시된 토큰이 서버측에서 무효화된 경우 — 새로 발급받아 재시도
+    r = await attempt()
+  }
+
+  if (!r.resp.ok) throw new Error(`OData ${r.resp.status}: ${r.text.slice(0, 300)}`)
+  return r.text
 }
 
 // ─── 엔티티 메타데이터 → 마크다운 스키마 표 (describe 대체, LLM 미사용) ──────

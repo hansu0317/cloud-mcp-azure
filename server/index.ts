@@ -9,6 +9,7 @@ import log                  from './logger'
 import { setupSse, HttpStatus } from './sse'
 import { CLAUDE_BIN, buildClaudeArgs } from './claude'
 import { fetchEntitySchema, dataverseEnvMissing, buildCompactCatalog, type SchemaEntry } from './dataverse'
+import { Semaphore } from './semaphore'
 import type { Instructions, LogEntry, ServerStats } from '../shared/types'
 
 // ─── 보안: Azure Dataverse 쓰기 도구 차단 목록 ────────────────────────────────
@@ -50,35 +51,6 @@ function readJsonFile<T>(filepath: string, fallback: T): T {
 
 function elapsed(startMs: number): string {
   return ((Date.now() - startMs) / 1000).toFixed(1)
-}
-
-// ─── 동시 접속 세마포어 ───────────────────────────────────────────────────────
-class Semaphore {
-  private active  = 0
-  private queue: Array<() => void> = []
-
-  constructor(private max: number) {}
-
-  acquire(): Promise<void> {
-    return new Promise(resolve => {
-      if (this.active < this.max) { this.active++; resolve() }
-      else this.queue.push(resolve)
-    })
-  }
-
-  release(): void {
-    const next = this.queue.shift()
-    if (next) next()
-    else this.active--
-  }
-
-  get size()    { return this.active }
-  get pending() { return this.queue.length }
-
-  // 활성 + 대기가 모두 꽉 찬 경우 (즉시 거절 기준)
-  isOverloaded(): boolean {
-    return this.active >= this.max && this.queue.length >= this.max * 2
-  }
 }
 
 const claudeSemaphore  = new Semaphore(MAX_CONCURRENT)
@@ -170,6 +142,7 @@ const chatLimiter = rateLimit({
   message:         { error: '요청이 너무 많습니다. 잠시 후 다시 시도하세요.' },
 })
 app.use('/api/chat',     chatLimiter)
+app.use('/api/chat-api', chatLimiter)   // API 모드도 CLI와 동일한 rate-limit 정책 공유
 app.use('/api/describe', chatLimiter)
 
 if (fs.existsSync(DIST_DIR)) app.use(express.static(DIST_DIR))
@@ -354,10 +327,20 @@ app.post('/api/chat', async (req, res) => {
     if (text && !benign) log.error('오류', text.slice(0, 300), { sessionId })
   })
 
-  claude.on('close', () => {
+  claude.on('close', (code) => {
     releaseSem()
     cleanup()
-    if (!finished) send({ type: 'done' })
+    if (!finished) {
+      // result 이벤트 없이 종료된 경우 — 비정상 종료·빈 응답을 조용한 성공으로 위장하지 않는다
+      if (code !== 0) {
+        log.error('오류', `Claude 프로세스 비정상 종료 (exit ${code})`, { sessionId })
+        send({ type: 'error', message: 'Claude 실행이 비정상 종료되었습니다. 다시 시도해주세요.' })
+      } else if (!lastText) {
+        send({ type: 'error', message: '응답이 비어있습니다. 다시 시도해주세요.' })
+      } else {
+        send({ type: 'done' })
+      }
+    }
     if (!res.writableEnded) res.end()
   })
 
@@ -453,12 +436,32 @@ app.get('/api/logs', (req, res) => {
   }
 })
 
+// ─── API: 헬스체크 (모니터링·기동 확인용) ────────────────────────────────────
+// curl http://localhost:3000/api/health 한 줄로 두 모드의 가용 상태를 확인한다.
+app.get('/api/health', (_req, res) => {
+  const dvMissing = dataverseEnvMissing()
+  res.json({
+    ok:           true,
+    uptime:       Math.floor((Date.now() - stats.startTime) / 1000),
+    schemaTables: schemaMeta.size,
+    cli: {
+      active: claudeSemaphore.size,
+      queued: claudeSemaphore.pending,
+      max:    MAX_CONCURRENT,
+    },
+    api: {
+      enabled: Boolean(process.env.ANTHROPIC_API_KEY) && !dvMissing,
+      ...(dvMissing ? { missingEnv: dvMissing } : {}),
+    },
+  })
+})
+
 // ─── Claude API 경로(선택 추가) ───────────────────────────────────────────────
 // @anthropic-ai/sdk 미설치·오류 시 조용히 건너뜀 → 기존 CLI 경로는 영향 없음.
 // POST /api/chat-api 이므로 아래 GET '*' 폴백보다 늦게 등록돼도 정상 동작함.
 import('../claudeapi/chat-api')
   .then(m => m.registerChatApi(app))
-  .catch(() => log.info('SERVER', 'Claude API 경로 비활성(의존성 미설치/오류) — CLI 경로만 사용'))
+  .catch(err => log.error('SERVER', 'Claude API 경로 비활성 — CLI 경로만 사용', { error: String(err) }))
 
 // ─── SPA 폴백 ─────────────────────────────────────────────────────────────────
 app.get('*', (_req, res) => {
@@ -489,3 +492,16 @@ function gracefulShutdown(signal: string) {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT',  () => gracefulShutdown('SIGINT'))
+
+// ─── 프로세스 레벨 안전망 ─────────────────────────────────────────────────────
+// 처리되지 않은 예외/거부로 서버가 소리 없이 죽는 것을 방지한다.
+// - unhandledRejection: 로그만 남기고 계속 동작 (요청 단위 오류는 각 라우트에서 이미 처리)
+// - uncaughtException: 상태를 신뢰할 수 없으므로 로그 후 graceful shutdown
+//   (server.sh/pm2가 재기동 담당 — 좀비 상태로 계속 도는 것보다 안전)
+process.on('unhandledRejection', (reason) => {
+  log.error('SERVER', 'Unhandled rejection', { error: String(reason) })
+})
+process.on('uncaughtException', (err) => {
+  log.error('SERVER', 'Uncaught exception — 서버를 안전 종료합니다', { error: err.stack ?? String(err) })
+  gracefulShutdown('uncaughtException')
+})
