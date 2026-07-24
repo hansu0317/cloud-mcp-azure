@@ -41,10 +41,9 @@ export function buildMessage(question: string, sessionId: string, instructions: 
 }
 
 export async function streamChat(opts: StreamChatOptions): Promise<void> {
-  const { message, sessionId, engine = 'cli', onText, onTool, onQuery, onDone, onError } = opts
+  const { message, sessionId, onText, onTool, onQuery, onDone, onError } = opts
 
-  const endpoint = engine === 'api' ? API.CHAT_API : API.CHAT
-  const resp = await fetch(endpoint, {
+  const resp = await fetch(API.CHAT, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ message, sessionId }),

@@ -1,8 +1,8 @@
 module.exports = {
   apps: [{
-    name:    'crm-mcp',
+    name:    'crm-ai-chat',
     script:  'dist-server/server/index.js',  // npm run build:server 후 사용
-    instances: 1,        // Claude spawn 구조상 단일 인스턴스
+    instances: 1,        // 세션 히스토리가 인메모리라 단일 인스턴스
     autorestart: true,
     watch:   false,
     max_memory_restart: '500M',
@@ -24,5 +24,5 @@ module.exports = {
 //   pm2 start ecosystem.config.js --env production
 //   pm2 save        ← 재부팅 후 자동 시작 등록
 //   pm2 startup     ← 시스템 서비스 등록 (안내 명령어 출력)
-//   pm2 logs crm-mcp
-//   pm2 restart crm-mcp
+//   pm2 logs crm-ai-chat
+//   pm2 restart crm-ai-chat

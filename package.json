@@ -1,7 +1,7 @@
 {
   "name": "crm-chat",
   "version": "2.0.0",
-  "description": "Makino CRM AI Notebook — Claude + Dataverse MCP",
+  "description": "Quali CRM AI Notebook — Claude API + Dataverse Web API (읽기 전용)",
   "main": "server/index.ts",
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",

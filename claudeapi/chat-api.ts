@@ -1,7 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Claude API(Messages) + Dataverse Web API(OData) 직접 연결 채팅 엔드포인트
+// 채팅 엔드포인트 (POST /api/chat) — Claude API(Messages) + Dataverse Web API(OData)
 //
-// 기존 Claude Code(CLI) 경로(server/index.ts /api/chat)와 완전히 분리된 추가 백엔드.
 // 구조: QualiSoft Azure 앱(서비스 주체) → client_credentials 토큰(server/dataverse.ts) →
 //        Dataverse Web API로 직접 조회(GET, 읽기 전용)
 //        → Claude가 schema.json(엔티티 집합명 포함) 기반으로 OData 쿼리를 작성/해석해 답변
@@ -13,17 +12,13 @@
 // 넣는다. 실제 컬럼 목록이 필요한 테이블은 dataverse_describe_table 도구로 Claude가
 // 직접 골라서 조회한다(schema.json 캐시 조회 — 네트워크 호출 없음, 즉시 응답).
 //
-// 동시성/타임아웃/세션 정리는 CLI 모드(server/index.ts)와 같은 정책·같은 환경변수를
-// 공유한다 — 운영자가 두 모드를 서로 다르게 튜닝할 필요가 없도록 하기 위함.
-//
 // 필요 환경변수 (루트 .env):
 //   ANTHROPIC_API_KEY        — Anthropic API 키 (필수)
 //   DATAVERSE_TENANT_ID / DATAVERSE_CLIENT_ID / DATAVERSE_CLIENT_SECRET / DATAVERSE_URL
 //   ANTHROPIC_MODEL          — 기본값 claude-haiku-4-5 (데모 속도 우선)
-//   MAX_CONCURRENT_API       — 기본값 10 (동시 Claude API 스트림 수. CLI보다 높은 이유는
-//                              OS 프로세스가 아니라 HTTP 연결이라 자원 비용이 훨씬 낮기 때문)
-//   CHAT_TIMEOUT_MS          — 기본값 120000. CLI 모드와 동일 변수를 공유
-//   MAX_SESSIONS             — 기본값 200. CLI 모드와 동일 변수를 공유(세션 정리 상한)
+//   MAX_CONCURRENT_API       — 기본값 10 (동시 Claude API 스트림 수)
+//   CHAT_TIMEOUT_MS          — 기본값 120000
+//   MAX_SESSIONS             — 기본값 200 (세션 정리 상한)
 // ─────────────────────────────────────────────────────────────────────────────
 import 'dotenv/config'
 import type { Express, Request, Response } from 'express'
@@ -39,15 +34,20 @@ import { Semaphore } from '../server/semaphore'
 const MODEL         = process.env.ANTHROPIC_MODEL         ?? 'claude-haiku-4-5'
 const MAX_TOKENS    = parseInt(process.env.ANTHROPIC_MAX_TOKENS ?? '4096')
 const MAX_CONCURRENT_API = parseInt(process.env.MAX_CONCURRENT_API ?? '10')
-const CHAT_TIMEOUT_MS    = parseInt(process.env.CHAT_TIMEOUT_MS    ?? '120000')   // CLI와 공유
-const MAX_SESSIONS       = parseInt(process.env.MAX_SESSIONS       ?? '200')      // CLI와 공유
+const CHAT_TIMEOUT_MS    = parseInt(process.env.CHAT_TIMEOUT_MS    ?? '120000')
+const MAX_SESSIONS       = parseInt(process.env.MAX_SESSIONS       ?? '200')
 const MAX_TOOL_LOOPS = 6
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000   // CLI 모드와 동일 정책
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000
 
 const CWD         = process.cwd()
 const SCHEMA_FILE = path.join(CWD, 'data', 'schema.json')
 
 const apiSemaphore = new Semaphore(MAX_CONCURRENT_API)
+
+// 헬스체크(/api/health)용 동시성 상태
+export function apiStatus(): { active: number; queued: number; max: number } {
+  return { active: apiSemaphore.size, queued: apiSemaphore.pending, max: MAX_CONCURRENT_API }
+}
 
 function readSchemaFile(): Record<string, SchemaEntry> {
   try { return JSON.parse(fs.readFileSync(SCHEMA_FILE, 'utf8')) as Record<string, SchemaEntry> }
@@ -160,7 +160,7 @@ function describeTableFromCache(table: string): string {
   return `## ${table}${entry.label ? ` (${entry.label})` : ''}${setName}\n${entry.schema}`
 }
 
-// ─── 세션별 대화 히스토리 (인메모리, TTL/상한 정리 — CLI 모드 sessionMap과 동일 정책) ──
+// ─── 세션별 대화 히스토리 (인메모리, TTL/상한 정리) ──────────────────────────
 type Msg = Anthropic.MessageParam
 interface HistorySession { messages: Msg[]; lastUsed: number }
 const historyMap = new Map<string, HistorySession>()
@@ -222,7 +222,7 @@ setInterval(() => {
 export function registerChatApi(app: Express): void {
   const client = new Anthropic()   // ANTHROPIC_API_KEY 환경변수 사용
 
-  app.post('/api/chat-api', async (req: Request, res: Response) => {
+  app.post('/api/chat', async (req: Request, res: Response) => {
     const { message, sessionId } = req.body as { message: string; sessionId: string }
     if (!message || !sessionId) {
       res.status(HttpStatus.BAD_REQUEST).json({ error: 'message와 sessionId가 필요합니다.' })
@@ -247,7 +247,7 @@ export function registerChatApi(app: Express): void {
     let semReleased = false
     const releaseSem = () => { if (!semReleased) { semReleased = true; apiSemaphore.release() } }
 
-    // 브라우저 연결이 끊기면 Anthropic 스트림도 즉시 취소 (CLI 모드의 claude.kill()과 동일 역할)
+    // 브라우저 연결이 끊기면 Anthropic 스트림도 즉시 취소
     const abortController = new AbortController()
     res.on('close', () => abortController.abort())
 
@@ -363,6 +363,6 @@ export function registerChatApi(app: Express): void {
     }
   })
 
-  log.info('SERVER', `Claude API 엔드포인트 등록됨 — POST /api/chat-api `
+  log.info('SERVER', `채팅 엔드포인트 등록됨 — POST /api/chat `
     + `(model: ${MODEL}, 동시 ${MAX_CONCURRENT_API}, 타임아웃 ${CHAT_TIMEOUT_MS / 1000}s)`)
 }

@@ -1,5 +1,4 @@
-// 동시 실행 제어 — CLI 모드(Claude Code 프로세스)와 API 모드(Claude API 스트림)가
-// 공용으로 쓰는 단일 구현. 운영자가 두 모드에 서로 다른 동시성 정책을 배울 필요가 없다.
+// 동시 실행 제어 — Claude API 스트림 수 제한 (대기열 + 포화 시 즉시 429 판단)
 export class Semaphore {
   private active  = 0
   private queue: Array<() => void> = []

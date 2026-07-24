@@ -45,16 +45,3 @@ export interface LogEntry {
   message:   string
   data?:     Record<string, unknown>
 }
-
-// 서버 통계
-export interface ServerStats {
-  uptime:          number
-  sessions:        number
-  queries:         number
-  toolCalls:       number
-  securityBlocks:  number
-  activeSessions:  number
-  activeProcs?:    number
-  maxProcs?:       number
-  queuedRequests?: number
-}
