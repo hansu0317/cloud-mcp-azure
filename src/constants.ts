@@ -1,6 +1,9 @@
 export const APP_NAME  = import.meta.env.VITE_APP_NAME  ?? 'CRM AI'
 export const CONN_NAME = import.meta.env.VITE_CONN_NAME ?? 'Cloud'
 
+// 네비게이션 허브 — 설정 시에만 헤더에 "마케팅 포털" 링크 노출 (선택)
+export const MARKETING_PORTAL_URL: string | undefined = import.meta.env.VITE_MARKETING_PORTAL_URL
+
 export const API = {
   CHAT:           '/api/chat',
   INSTRUCTIONS:   '/api/instructions',
