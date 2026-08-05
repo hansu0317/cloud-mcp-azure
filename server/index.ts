@@ -7,6 +7,7 @@ import log                  from './logger'
 import { HttpStatus }       from './sse'
 import { fetchEntitySchema, dataverseEnvMissing, type SchemaEntry } from './dataverse'
 import { registerChatApi, apiStatus } from '../claudeapi/chat-api'
+import { anthropicConfigured, currentModel, anthropicHealth } from './claude-client'
 import type { Instructions, LogEntry } from '../shared/types'
 
 // ─── 환경변수 ─────────────────────────────────────────────────────────────────
@@ -198,22 +199,37 @@ app.get('/api/logs', (req, res) => {
 
 // ─── API: 헬스체크 (모니터링·기동 확인용) ────────────────────────────────────
 // curl http://localhost:3000/api/health 한 줄로 가용 상태를 확인한다.
-app.get('/api/health', (_req, res) => {
+// 의존 서비스(Claude API) 상태까지 롤업해서 보여준다 — 어디가 끊겼는지
+// 이 한 번의 호출로 판별할 수 있어야 한다.
+app.get('/api/health', async (_req, res) => {
   const dvMissing = dataverseEnvMissing()
   res.json({
     ok:           true,
     uptime:       Math.floor((Date.now() - startTime) / 1000),
     schemaTables: schemaMeta.size,
-    chat: {
-      enabled: Boolean(process.env.ANTHROPIC_API_KEY) && !dvMissing,
+    dataverse: {
+      url:       process.env.DATAVERSE_URL ?? null,
+      connected: !dvMissing,
       ...(dvMissing ? { missingEnv: dvMissing } : {}),
+    },
+    chat: {
+      enabled: anthropicConfigured() && !dvMissing,
+      ...(dvMissing ? { missingEnv: dvMissing } : {}),
+      ...(anthropicConfigured() ? {} : { missingEnv: 'ANTHROPIC_API_KEY' }),
       ...apiStatus(),
+    },
+    dependencies: {
+      anthropic: {
+        model:      currentModel(),
+        configured: anthropicConfigured(),
+        ...(await anthropicHealth() ?? {}),
+      },
     },
   })
 })
 
-// ─── 채팅 엔드포인트 (Claude API + Dataverse Web API) ─────────────────────────
-if (process.env.ANTHROPIC_API_KEY) {
+// ─── 채팅 엔드포인트 (Claude API 직접 호출 + Dataverse 네이티브 MCP + Web API) ──
+if (anthropicConfigured()) {
   registerChatApi(app)
 } else {
   log.error('SERVER', 'ANTHROPIC_API_KEY 미설정 — 채팅(/api/chat) 비활성. .env를 확인하세요.')

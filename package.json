@@ -1,7 +1,7 @@
 {
   "name": "crm-chat",
   "version": "2.0.0",
-  "description": "Quali CRM AI Notebook — Claude API + Dataverse Web API (읽기 전용)",
+  "description": "Quali CRM AI Notebook — Claude API 직접 호출 + Dataverse 네이티브 MCP + Web API (읽기 전용, text-to-SQL)",
   "main": "server/index.ts",
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
@@ -12,10 +12,11 @@
     "build:server": "tsc -p tsconfig.server.json",
     "start": "node dist-server/server/index.js",
     "type-check": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.70.1",
+    "@anthropic-ai/sdk": "^0.115.0",
     "dotenv": "^16.4.5",
     "express": "^4.18.2",
     "express-rate-limit": "^7.3.1",
@@ -34,6 +35,7 @@
     "react-dom": "^18.3.1",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
-    "vite": "^5.3.4"
+    "vite": "^5.3.4",
+    "vitest": "^4.1.10"
   }
 }

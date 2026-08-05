@@ -8,7 +8,8 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    port: 5173,
+    port: 5174,
+    strictPort: true,   // 조용히 다른 포트로 옮겨가면 로컬 북마크·프록시 설정이 깨진다
     proxy: {
       '/api': {
         target:       'http://localhost:3000',

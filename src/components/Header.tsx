@@ -1,6 +1,6 @@
 import type { RefObject } from 'react'
 import type { NotebookHandle } from '../types'
-import { APP_NAME, MARKETING_PORTAL_URL } from '../constants'
+import { APP_NAME } from '../constants'
 
 interface Props {
   onNewSession:    () => void
@@ -21,11 +21,6 @@ export default function Header({ onNewSession, onToggleSidebar, notebookRef }: P
         <button className="btn" onClick={() => notebookRef.current?.addCell()}>＋ 셀 추가</button>
       </div>
       <div className="h-spacer" />
-      {MARKETING_PORTAL_URL && (
-        <a className="btn" href={MARKETING_PORTAL_URL} target="_blank" rel="noreferrer">
-          ↗ 마케팅 포털
-        </a>
-      )}
       <button className="btn" onClick={onToggleSidebar} title="사이드바 토글">≡</button>
       <button className="btn" onClick={onNewSession}>↺ 새 세션</button>
     </header>
