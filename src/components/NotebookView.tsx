@@ -1,25 +1,40 @@
-import { forwardRef, useImperativeHandle, useState, useCallback, useRef } from 'react'
+import { forwardRef, useImperativeHandle, useState, useCallback, useRef, useEffect } from 'react'
 import NotebookCell from './NotebookCell'
 import { streamChat, buildMessage } from '../api'
-import { APP_NAME } from '../constants'
+import { APP_NAME, CELLS_AUTOSAVE_DEBOUNCE_MS } from '../constants'
 import type { Instructions, Cell, NotebookHandle, QueryLog } from '../types'
 
 interface Props {
-  sessionId:    string
-  instructions: Instructions
-  showToast:    (msg: string) => void
+  sessionId:      string
+  instructions:   Instructions
+  tables:         string[]                    // 프로젝트 테이블 스코프 — 빈 배열이면 전체 테이블
+  initialCells?:  Cell[]                      // 프로젝트 전환 시 저장된 셀 복원
+  onCellsChange?: (cells: Cell[]) => void      // 자동저장(디바운스)용
+  showToast:      (msg: string) => void
 }
 
 const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
-  { sessionId, instructions, showToast },
+  { sessionId, instructions, tables, initialCells, onCellsChange, showToast },
   ref
 ) {
-  const [cells, setCells] = useState<Cell[]>([])
+  const [cells, setCells] = useState<Cell[]>(() => initialCells ?? [])
 
-  const cellCounterRef = useRef(0)
+  const cellCounterRef = useRef(Math.max(0, ...(initialCells?.map(c => c.id) ?? [0])))
   const execCounterRef = useRef(0)
   const cellsRef       = useRef(cells)
   cellsRef.current     = cells
+
+  // 자동저장 — 스트리밍 중 매 토큰마다 바로 저장하면 요청이 폭주하므로 디바운스.
+  // 프로젝트를 전환하면 이 컴포넌트가 key로 통째로 리마운트되므로, 마운트 직후
+  // (= 방금 복원한 initialCells 그대로) 한 번은 저장을 건너뛴다.
+  const onCellsChangeRef = useRef(onCellsChange)
+  onCellsChangeRef.current = onCellsChange
+  const mountedRef = useRef(false)
+  useEffect(() => {
+    if (!mountedRef.current) { mountedRef.current = true; return }
+    const t = setTimeout(() => onCellsChangeRef.current?.(cellsRef.current), CELLS_AUTOSAVE_DEBOUNCE_MS)
+    return () => clearTimeout(t)
+  }, [cells])
 
   const addCell = useCallback((text = ''): number => {
     const id = ++cellCounterRef.current
@@ -33,10 +48,6 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
 
   const updateText = useCallback((id: number, text: string) => {
     setCells(prev => prev.map(c => c.id === id ? { ...c, text } : c))
-  }, [])
-
-  const clearActive = useCallback(() => {
-    setCells([])
   }, [])
 
   const runCell = useCallback(async (id: number) => {
@@ -57,6 +68,7 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
       await streamChat({
         message:  buildMessage(cell.text, sessionId, instructions),
         sessionId,
+        tables,
         onText: (text) => {
           acc.current += text
           const snapshot = acc.current
@@ -102,7 +114,7 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
         : c
       ))
     }
-  }, [sessionId, instructions])
+  }, [sessionId, instructions, tables])
 
   const runAll = useCallback(async () => {
     for (const cell of cellsRef.current) {
@@ -132,7 +144,7 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
     }
   }, [showToast])
 
-  useImperativeHandle(ref, () => ({ addCell, runAll, clearActive }), [addCell, runAll, clearActive])
+  useImperativeHandle(ref, () => ({ addCell, runAll }), [addCell, runAll])
 
   return (
     <div className="notebook-view">

@@ -7,6 +7,7 @@ import log                  from './logger'
 import { HttpStatus }       from './sse'
 import { fetchEntitySchema, dataverseEnvMissing, type SchemaEntry } from './dataverse'
 import { registerChatApi, apiStatus } from '../claudeapi/chat-api'
+import * as projects from './projects'
 import type { Instructions, LogEntry } from '../shared/types'
 
 // ─── 환경변수 ─────────────────────────────────────────────────────────────────
@@ -128,6 +129,38 @@ app.get('/api/tables', (_req, res) => {
     name, label: meta.label, domain: meta.domain,
   }))
   res.json({ tables })
+})
+
+// ─── API: 프로젝트 (구 "세션") ────────────────────────────────────────────────
+// 이름 + 테이블 스코프 + 노트북 셀을 data/projects/<id>.json에 영속화한다.
+// Claude 대화 히스토리(history)는 여기서 절대 응답에 포함하지 않는다(claudeapi/chat-api.ts 전용).
+app.get('/api/projects', (_req, res) => {
+  res.json({ projects: projects.listProjects() })
+})
+
+app.post('/api/projects', (req, res) => {
+  const { name, tables } = req.body as { name?: string; tables?: string[] }
+  const created = projects.createProject(name ?? '', Array.isArray(tables) ? tables : [])
+  res.json(created)
+})
+
+app.get('/api/projects/:id', (req, res) => {
+  const project = projects.getProject(req.params.id)
+  if (!project) { res.status(HttpStatus.NOT_FOUND).json({ error: '프로젝트를 찾을 수 없습니다.' }); return }
+  res.json(project)
+})
+
+app.patch('/api/projects/:id', (req, res) => {
+  const { name, tables, cells } = req.body as { name?: string; tables?: string[]; cells?: unknown[] }
+  const updated = projects.updateProject(req.params.id, { name, tables, cells })
+  if (!updated) { res.status(HttpStatus.NOT_FOUND).json({ error: '프로젝트를 찾을 수 없습니다.' }); return }
+  res.json(updated)
+})
+
+app.delete('/api/projects/:id', (req, res) => {
+  const ok = projects.deleteProject(req.params.id)
+  if (!ok) { res.status(HttpStatus.NOT_FOUND).json({ error: '프로젝트를 찾을 수 없습니다.' }); return }
+  res.json({ ok: true })
 })
 
 // ─── 테이블 스키마 조회 (Dataverse Web API EntityDefinitions 직접 호출 — LLM 미사용) ──

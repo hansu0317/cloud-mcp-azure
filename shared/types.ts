@@ -8,8 +8,6 @@ export type SseEvent =
   | { type: 'error'; message: string }
   | { type: 'done' }
 
-export type CellType = 'ai'
-
 // 지침 설정
 export interface JoinDef {
   fromTable: string
@@ -45,3 +43,14 @@ export interface LogEntry {
   message:   string
   data?:     Record<string, unknown>
 }
+
+// 프로젝트("새 세션"을 대체) — 이름 + 테이블 스코프 + 노트북 셀을 서버가 영속화한다.
+// cells는 프론트 전용 구조라 서버는 내용을 해석하지 않고 그대로 저장/반환만 한다.
+export interface ProjectSummary {
+  id:         string
+  name:       string
+  tables:     string[]   // 이 프로젝트의 테이블 스코프 (빈 배열 = 전체 테이블)
+  createdAt:  string
+  updatedAt:  string
+}
+

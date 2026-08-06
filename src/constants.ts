@@ -8,7 +8,10 @@ export const API = {
   DESCRIBE:       '/api/describe',
   TABLES:         '/api/tables',
   SCHEMA_REFRESH: '/api/schemas/refresh',
+  PROJECTS:       '/api/projects',
 } as const
+
+export const CELLS_AUTOSAVE_DEBOUNCE_MS = 900
 
 export const SIDEBAR_MIN_W = 140
 export const SIDEBAR_MAX_W = 480

@@ -1,18 +1,38 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { SIDEBAR_MIN_W, SIDEBAR_MAX_W, API, CONN_NAME } from '../constants'
+import TableScopeModal from './TableScopeModal'
+import type { ProjectSummary } from '../types'
 
 interface TableItem    { name: string; label: string }
 interface CatalogGroup { domain: string; tables: TableItem[] }
 
 interface Props {
   collapsed: boolean
+
+  projects:        ProjectSummary[]
+  activeProjectId: string | null
+  onSwitchProject: (id: string) => void
+  onCreateProject: (name: string) => Promise<ProjectSummary>
+  onRenameProject: (id: string, name: string) => void
+  onDeleteProject: (id: string) => void
+  onSelectTables:  (projectId: string, tables: string[]) => void   // 프로젝트별 테이블 스코프 변경
 }
 
-export default function Sidebar({ collapsed }: Props) {
+// 프로젝트 목록 — 테이블 스코프는 목록에 항상 펼쳐 두지 않고, Databricks Genie의
+// "Connect your data" 팝업처럼 별도 모달에서 고른다. 새 프로젝트를 만들면 곧바로
+// 그 모달이 뜨고, 이후에는 각 행의 "＋ 테이블" 버튼으로 언제든 다시 열어 추가/해제한다.
+export default function Sidebar({
+  collapsed, projects, activeProjectId,
+  onSwitchProject, onCreateProject, onRenameProject, onDeleteProject, onSelectTables,
+}: Props) {
   const [catalog,     setCatalog]     = useState<CatalogGroup[]>([])
-  const [openGroups,  setOpenGroups]  = useState<Record<string, boolean>>({})
   const [refreshing,  setRefreshing]  = useState(false)
   const [refreshMsg,  setRefreshMsg]  = useState<string | null>(null)
+
+  const [newName,        setNewName]        = useState('')
+  const [renamingId,     setRenamingId]      = useState<string | null>(null)
+  const [renameVal,      setRenameVal]       = useState('')
+  const [editingProject, setEditingProject]  = useState<ProjectSummary | null>(null)   // 테이블 선택 모달 대상
 
   const sbRef      = useRef<HTMLDivElement>(null)
   const resizerRef = useRef<HTMLDivElement>(null)
@@ -75,17 +95,28 @@ export default function Sidebar({ collapsed }: Props) {
     return () => resizer.removeEventListener('mousedown', onDown)
   }, [])
 
-  const toggleGroup = (domain: string) => {
-    setOpenGroups(prev => ({ ...prev, [domain]: !prev[domain] }))
+  const submitCreate = async () => {
+    const name = newName.trim()
+    if (!name) return
+    setNewName('')
+    const created = await onCreateProject(name)
+    setEditingProject(created)   // 만들자마자 테이블 선택 팝업으로 이어간다
+  }
+
+  const startRename = (p: ProjectSummary) => { setRenamingId(p.id); setRenameVal(p.name) }
+  const submitRename = () => {
+    if (renamingId && renameVal.trim()) onRenameProject(renamingId, renameVal.trim())
+    setRenamingId(null)
+  }
+  const handleDelete = (p: ProjectSummary) => {
+    if (window.confirm(`"${p.name}" 프로젝트를 삭제할까요?\n노트북 기록과 대화 내용이 모두 사라지며 되돌릴 수 없습니다.`)) {
+      onDeleteProject(p.id)
+    }
   }
 
   return (
     <>
       <div className={`sidebar${collapsed ? ' collapsed' : ''}`} ref={sbRef}>
-        <div className="sb-tabs">
-          <button className="sb-tab active">카탈로그</button>
-        </div>
-
         <div className="sb-body">
           <div className="cat-conn">
             <div className="cat-conn-row" style={{ cursor: 'default' }}>
@@ -115,33 +146,63 @@ export default function Sidebar({ collapsed }: Props) {
             )}
           </div>
 
-          {catalog.length === 0 && !refreshing && (
-            <div style={{ padding: '12px 16px', color: 'var(--text-muted)', fontSize: '12px' }}>
-              테이블 없음 — 스키마 갱신을 실행하세요
-            </div>
-          )}
-          {catalog.map(g => (
-            <div className="cat-conn" key={g.domain}>
-              <div className="cat-conn-row" onClick={() => toggleGroup(g.domain)}>
-                <span className={`cat-conn-chev${openGroups[g.domain] ? ' open' : ''}`}>▶</span>
-                <span className="cat-conn-name">{g.domain}</span>
-              </div>
-              {openGroups[g.domain] && (
-                <div>
-                  {g.tables.map(t => (
-                    <div className="cat-table-row" key={t.name}>
-                      <span className="cat-table-icon">⊞</span>
-                      <span className="cat-table-name" title={t.name}>{t.label}</span>
-                      <span className="cat-table-cnt">{t.name}</span>
-                    </div>
-                  ))}
+          <div className="proj-new-row">
+            <input
+              className="proj-new-input"
+              placeholder="+ 새 프로젝트 이름"
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') submitCreate() }}
+            />
+            <button className="btn btn-sm primary" onClick={submitCreate} disabled={!newName.trim()}>추가</button>
+          </div>
+
+          {projects.length === 0 && <div className="sb-empty">프로젝트가 없습니다</div>}
+
+          {projects.map(p => (
+            <div className={`proj-row${p.id === activeProjectId ? ' active' : ''}`} key={p.id}>
+              {renamingId === p.id ? (
+                <input
+                  className="proj-rename-input"
+                  value={renameVal}
+                  autoFocus
+                  onChange={e => setRenameVal(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') submitRename(); if (e.key === 'Escape') setRenamingId(null) }}
+                  onBlur={submitRename}
+                />
+              ) : (
+                <div className="proj-row-main" onClick={() => onSwitchProject(p.id)}>
+                  <span className="proj-icon">📁</span>
+                  <span className="proj-name">{p.name}</span>
+                  <button
+                    className="proj-table-badge clickable"
+                    title="테이블 선택 열기"
+                    onClick={e => { e.stopPropagation(); setEditingProject(p) }}
+                  >
+                    {p.tables.length > 0 ? `${p.tables.length}개` : '전체'}
+                  </button>
                 </div>
               )}
+              <div className="proj-acts">
+                <button className="btn-xs proj-act-btn" title="테이블 추가/변경" onClick={() => setEditingProject(p)}>＋</button>
+                <button className="btn-xs proj-act-btn" title="이름 변경" onClick={() => startRename(p)}>✎</button>
+                <button className="btn-xs proj-act-btn danger" title="삭제" onClick={() => handleDelete(p)}>🗑</button>
+              </div>
             </div>
           ))}
         </div>
       </div>
       <div className="sb-resizer" ref={resizerRef} />
+
+      {editingProject && (
+        <TableScopeModal
+          projectName={editingProject.name}
+          catalog={catalog}
+          initialTables={editingProject.tables}
+          onClose={() => setEditingProject(null)}
+          onConfirm={tables => { onSelectTables(editingProject.id, tables); setEditingProject(null) }}
+        />
+      )}
     </>
   )
 }

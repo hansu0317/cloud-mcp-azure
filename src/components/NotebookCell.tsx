@@ -31,6 +31,15 @@ export default function NotebookCell({ cell, onRun, onDelete, onTextChange, onEx
     if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); onRun() }
   }
 
+  // 내용이 있는 셀(질문을 썼거나 답변을 받은 셀)만 확인창을 띄운다 — 방금 추가한
+  // 빈 셀을 바로 지울 땐 매번 물어보면 번거로우니 그 경우엔 바로 지운다.
+  const handleDeleteClick = () => {
+    const hasContent = cell.text.trim().length > 0 || cell.output !== null
+    if (!hasContent || window.confirm('이 셀을 삭제할까요?\n질문과 답변 내용이 사라지며 되돌릴 수 없습니다.')) {
+      onDelete()
+    }
+  }
+
   const { output } = cell
   const isRunning  = output?.loading
   const hasError   = output?.error
@@ -61,7 +70,7 @@ export default function NotebookCell({ cell, onRun, onDelete, onTextChange, onEx
           <button className="btn btn-sm" onClick={onRun} disabled={isRunning}>
             {isRunning ? '⏳' : '▶ 실행'}
           </button>
-          <button className="btn btn-sm danger" onClick={onDelete}>×</button>
+          <button className="btn btn-sm danger" onClick={handleDeleteClick}>×</button>
         </div>
       </div>
 

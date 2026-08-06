@@ -2,7 +2,7 @@
 
 export type {
   Instructions, JoinDef, TermDef, ExampleDef,
-  LogEntry,
+  LogEntry, ProjectSummary,
 } from '../../shared/types'
 
 // 노트북 셀
@@ -24,50 +24,26 @@ export interface Cell {
   output: CellOutput | null
 }
 
-// 채팅 메시지
-export type MessageStatus = 'typing' | 'streaming' | 'tool' | 'done' | 'error'
+// /api/projects/:id 응답 — 서버는 cells를 unknown[]로 다루지만 프론트에서는 Cell[]로 좁혀 쓴다.
+export interface ProjectDetail {
+  id:        string
+  name:      string
+  tables:    string[]
+  cells:     Cell[]
+  createdAt: string
+  updatedAt: string
+}
 
 export interface QueryLog {
   tool:  string
   input: Record<string, unknown>
 }
 
-export interface Message {
-  id:       number
-  role:     'user' | 'ai'
-  content:  string
-  status?:  MessageStatus
-  toolName?: string | null
-  queries?: QueryLog[]
-}
-
-// 즐겨찾기
-export interface Bookmark {
-  text: string
-  type: 'ai'
-  at:   string
-}
-
-// 카탈로그
-export interface TableEntry {
-  name:  string
-  label: string
-}
-
-export interface CatalogGroup {
-  domain: string
-  icon:   string
-  tables: TableEntry[]
-}
-
-export interface TableMeta extends TableEntry {
-  domain: string
-}
-
 // streamChat 옵션
 export interface StreamChatOptions {
   message:   string
   sessionId: string
+  tables?:   string[]   // 프로젝트 테이블 스코프 — 빈 배열/미지정이면 전체 테이블
 
   onText?:   (text: string) => void
   onTool?:   (name: string) => void
@@ -78,7 +54,6 @@ export interface StreamChatOptions {
 
 // NotebookView forwardRef 핸들
 export interface NotebookHandle {
-  addCell:     (text?: string) => number
-  runAll:      () => Promise<void>
-  clearActive: () => void   // 셀 전체 초기화
+  addCell: (text?: string) => number
+  runAll:  () => Promise<void>
 }

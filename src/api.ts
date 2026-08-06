@@ -1,8 +1,8 @@
 import { marked }     from 'marked'
 import DOMPurify      from 'dompurify'
 import { API } from './constants'
-import type { Instructions, StreamChatOptions } from './types'
-import type { SseEvent } from '../shared/types'
+import type { Instructions, StreamChatOptions, ProjectDetail } from './types'
+import type { SseEvent, ProjectSummary } from '../shared/types'
 
 export function renderMd(text: string): string {
   if (!text) return ''
@@ -11,10 +11,6 @@ export function renderMd(text: string): string {
 
 // 세션별 instructions 전송 여부 추적 — 첫 메시지에만 지침 첨부 (스키마는 서버에서 주입)
 const contextSentSessions = new Set<string>()
-
-export function resetSessionContext(sessionId: string): void {
-  contextSentSessions.delete(sessionId)
-}
 
 export function buildMessage(question: string, sessionId: string, instructions: Partial<Instructions> = {}): string {
   if (contextSentSessions.has(sessionId)) return question
@@ -41,12 +37,12 @@ export function buildMessage(question: string, sessionId: string, instructions: 
 }
 
 export async function streamChat(opts: StreamChatOptions): Promise<void> {
-  const { message, sessionId, onText, onTool, onQuery, onDone, onError } = opts
+  const { message, sessionId, tables, onText, onTool, onQuery, onDone, onError } = opts
 
   const resp = await fetch(API.CHAT, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ message, sessionId }),
+    body:    JSON.stringify({ message, sessionId, tables }),
   })
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
 
@@ -73,3 +69,37 @@ export async function streamChat(opts: StreamChatOptions): Promise<void> {
   }
 }
 
+// ─── 프로젝트 (구 "세션") — 이름 + 테이블 스코프 + 노트북 셀을 서버에 영속화 ──────
+export async function listProjects(): Promise<ProjectSummary[]> {
+  const { projects } = await fetch(API.PROJECTS).then(r => r.json()) as { projects: ProjectSummary[] }
+  return projects
+}
+
+export async function createProject(name: string, tables: string[] = []): Promise<ProjectDetail> {
+  return fetch(API.PROJECTS, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ name, tables }),
+  }).then(r => r.json()) as Promise<ProjectDetail>
+}
+
+export async function getProject(id: string): Promise<ProjectDetail | null> {
+  const resp = await fetch(`${API.PROJECTS}/${id}`)
+  if (!resp.ok) return null
+  return resp.json() as Promise<ProjectDetail>
+}
+
+export async function updateProject(
+  id: string,
+  patch: { name?: string; tables?: string[]; cells?: unknown[] },
+): Promise<void> {
+  await fetch(`${API.PROJECTS}/${id}`, {
+    method:  'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(patch),
+  })
+}
+
+export async function deleteProject(id: string): Promise<void> {
+  await fetch(`${API.PROJECTS}/${id}`, { method: 'DELETE' })
+}

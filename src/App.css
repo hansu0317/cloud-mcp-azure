@@ -24,6 +24,7 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 .btn-xs { padding: 2px 7px; font-size: 11px; border-radius: 4px; }
 .btn-sm { padding: 3px 9px; font-size: 11px; }
 .nb-only { display: flex; gap: 4px; }
+.proj-indicator { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Body */
 .body { flex: 1; display: flex; overflow: hidden; }
@@ -50,11 +51,58 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 .cat-conn-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .cat-conn-status { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .cat-conn-status.connected { background: #22c55e; }
-.cat-table-row { display: flex; align-items: center; gap: 5px; padding: 3px 10px 3px 26px; font-size: 11px; color: #64748b; cursor: pointer; user-select: none; transition: background 0.1s; }
+.cat-table-row { display: flex; align-items: center; gap: 6px; padding: 3px 10px 3px 12px; font-size: 11px; color: #64748b; cursor: pointer; user-select: none; transition: background 0.1s; }
 .cat-table-row:hover { background: #0d1120; color: #94a3b8; }
+.cat-table-check { flex-shrink: 0; accent-color: #6366f1; cursor: pointer; }
 .cat-table-icon { font-size: 10px; color: #6366f1; flex-shrink: 0; }
 .cat-table-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cat-table-cnt { font-size: 10px; color: #2a3a50; flex-shrink: 0; }
+.group-select-btn { flex-shrink: 0; font-size: 9.5px; font-weight: 700; color: #334155; background: transparent; border: 1px solid #1e2533; border-radius: 4px; padding: 1px 6px; cursor: pointer; font-family: inherit; }
+.group-select-btn:hover { color: #a5b4fc; border-color: #6366f1; }
+.group-select-btn.partial { color: #fbbf24; border-color: #7a5c1e; }
+
+/* 테이블 스코프 "전체 해제" (TableScopeModal 안에서 사용) */
+.scope-clear { flex-shrink: 0; font-size: 10px; font-weight: 600; color: #94a3b8; background: transparent; border: 1px solid #2a3144; border-radius: 4px; padding: 2px 7px; cursor: pointer; font-family: inherit; white-space: nowrap; }
+.scope-clear:hover { border-color: #f87171; color: #f87171; }
+
+/* 프로젝트 목록 — 테이블 스코프는 목록에 펼쳐두지 않고 TableScopeModal 팝업에서 고른다 */
+.proj-new-row { display: flex; gap: 5px; padding: 6px 10px 10px; }
+.proj-new-input { flex: 1; min-width: 0; padding: 5px 8px; font-size: 11.5px; background: #0d1120; border: 1px solid #1e2533; border-radius: 4px; color: #e2e8f0; font-family: inherit; }
+.proj-new-input:focus { outline: none; border-color: #6366f1; }
+
+.proj-row { display: flex; align-items: center; gap: 4px; padding: 2px 6px 2px 10px; border-radius: 6px; margin: 0 4px 1px; }
+.proj-row:hover { background: #0d1120; }
+.proj-row.active { background: #131a3a; }
+.proj-row-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 6px 0; cursor: pointer; }
+.proj-icon { font-size: 12px; flex-shrink: 0; }
+.proj-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: #cbd5e1; font-weight: 500; }
+.proj-row.active .proj-name { color: #a5b4fc; font-weight: 700; }
+.proj-table-badge { flex-shrink: 0; font-size: 9.5px; color: #475569; background: #0a0e18; border: 1px solid #1e2533; border-radius: 3px; padding: 1px 6px; white-space: nowrap; font-family: inherit; }
+.proj-table-badge.clickable { cursor: pointer; }
+.proj-table-badge.clickable:hover { color: #a5b4fc; border-color: #6366f1; }
+.proj-acts { display: flex; gap: 2px; flex-shrink: 0; opacity: 0; transition: opacity 0.1s; }
+.proj-row:hover .proj-acts { opacity: 1; }
+.proj-act-btn { background: transparent; border: none; color: #475569; cursor: pointer; padding: 4px 5px; border-radius: 4px; font-size: 11px; }
+.proj-act-btn:hover { background: #1a2030; color: #a5b4fc; }
+.proj-act-btn.danger:hover { color: #f87171; }
+.proj-rename-input { flex: 1; min-width: 0; margin: 3px 0; padding: 4px 7px; font-size: 12px; background: #0a0e18; border: 1px solid #6366f1; border-radius: 4px; color: #e2e8f0; font-family: inherit; }
+.proj-rename-input:focus { outline: none; }
+
+/* 테이블 선택 팝업(TableScopeModal) — .cat-conn-row/.cat-table-row를 재사용하되 살짝 들여쓴다 */
+.cat-conn-row.nested { padding-left: 6px; }
+.cat-table-row.nested { padding-left: 8px; }
+
+.ts-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 200; display: flex; align-items: center; justify-content: center; }
+.ts-modal-inner { background: #0a0e18; border: 1px solid #1e2533; border-radius: 10px; width: 88vw; max-width: 640px; height: 72vh; max-height: 640px; display: flex; flex-direction: column; }
+.ts-modal-hdr { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 14px 16px 12px; border-bottom: 1px solid #1e2533; flex-shrink: 0; }
+.ts-modal-title { font-size: 14px; font-weight: 700; color: #e2e8f0; }
+.ts-modal-sub { font-size: 11.5px; color: #64748b; margin-top: 3px; }
+.ts-modal-search { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid #1e2533; flex-shrink: 0; }
+.ts-search-input { flex: 1; min-width: 0; padding: 7px 10px; font-size: 12.5px; background: #0d1120; border: 1px solid #1e2533; border-radius: 6px; color: #e2e8f0; font-family: inherit; }
+.ts-search-input:focus { outline: none; border-color: #6366f1; }
+.ts-selected-count { flex-shrink: 0; font-size: 10.5px; color: #7dd3fc; white-space: nowrap; }
+.ts-modal-body { flex: 1; overflow-y: auto; padding: 6px 4px; }
+.ts-modal-ftr { display: flex; align-items: center; gap: 8px; padding: 11px 16px; border-top: 1px solid #1e2533; flex-shrink: 0; }
 
 /* Notebook */
 .notebook-view { flex: 1; display: flex; overflow: hidden; }

@@ -130,16 +130,6 @@ case "$1" in
     fi
     ;;
 
-  logs-error)
-    ERR_LOG="$LOG_DIR/error.log"
-    if [ -f "$ERR_LOG" ]; then
-      echo "── error.log ───────────────────────────────"
-      tail -f "$ERR_LOG"
-    else
-      echo "에러 로그 없음"
-    fi
-    ;;
-
   cron-setup)
     CRON_CMD="0 10 * * * $APP_DIR/scripts/log_rotate.sh >> $LOG_DIR/rotate.log 2>&1"
     (crontab -l 2>/dev/null | grep -v "log_rotate.sh"; echo "$CRON_CMD") | crontab -
@@ -153,7 +143,7 @@ case "$1" in
     ;;
 
   *)
-    echo "사용법: $0 {start|stop|restart|status|logs|logs-error|cron-setup|cron-remove}"
+    echo "사용법: $0 {start|stop|restart|status|logs|cron-setup|cron-remove}"
     exit 1
     ;;
 esac

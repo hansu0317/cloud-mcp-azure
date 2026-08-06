@@ -29,6 +29,7 @@ import { setupSse, HttpStatus } from '../server/sse'
 import log from '../server/logger'
 import { dataverseGet, dataverseEnvMissing, buildCompactCatalog, type SchemaEntry } from '../server/dataverse'
 import { Semaphore } from '../server/semaphore'
+import { getProjectHistory, saveProjectHistory } from '../server/projects'
 
 // ─── 설정 ─────────────────────────────────────────────────────────────────────
 const MODEL         = process.env.ANTHROPIC_MODEL         ?? 'claude-haiku-4-5'
@@ -58,22 +59,25 @@ function readSchemaFile(): Record<string, SchemaEntry> {
 // 1) 엔티티집합명 화이트리스트: schema.json에 등록된 테이블만 조회 허용
 //    (환각으로 만든 경로·등록 외 테이블 접근을 원천 차단, 위반 시 tool_result
 //     오류로 돌려보내 모델이 카탈로그 기준으로 자가 수정하게 한다)
+//    프로젝트에 테이블 스코프(tables)가 지정돼 있으면 그 안에서만 추가로 제한한다.
 // 2) $top 상한: 목록 조회에 $top이 없으면 100을 강제해 무제한 전체 조회로 인한
 //    Dataverse 부하·응답 비대를 방지 (집계 $apply/$count·단건 조회는 제외)
-function allowedEntitySets(): Set<string> {
+function allowedEntitySets(tables?: string[]): Set<string> {
+  const scoped = tables && tables.length > 0 ? new Set(tables) : null
   const sets = new Set<string>()
-  for (const info of Object.values(readSchemaFile())) {
+  for (const [table, info] of Object.entries(readSchemaFile())) {
+    if (scoped && !scoped.has(table)) continue
     if (info.entitySetName) sets.add(info.entitySetName)
   }
   return sets
 }
 
-function guardODataPath(relPath: string): string {
+function guardODataPath(relPath: string, tables?: string[]): string {
   const clean = relPath.replace(/^\/+/, '')
   const entitySet = /^([A-Za-z_][A-Za-z0-9_]*)/.exec(clean)?.[1] ?? ''
-  const allowed = allowedEntitySets()
+  const allowed = allowedEntitySets(tables)
   if (allowed.size > 0 && !allowed.has(entitySet)) {
-    throw new Error(`허용되지 않은 엔티티 집합명 "${entitySet}"입니다. 카탈로그에 표시된 엔티티집합명을 그대로 사용하세요.`)
+    throw new Error(`허용되지 않은 엔티티 집합명 "${entitySet}"입니다. 이 프로젝트의 테이블 스코프에 포함된 엔티티집합명만 사용하세요.`)
   }
 
   const qIdx = clean.indexOf('?')
@@ -88,8 +92,8 @@ function guardODataPath(relPath: string): string {
 }
 
 // 데이터 조회용 GET — 가드 통과 후 공용 dataverseGet(원문 텍스트) + 컨텍스트 절약용 truncate
-async function dataverseQuery(relPath: string): Promise<string> {
-  const text = await dataverseGet(guardODataPath(relPath))
+async function dataverseQuery(relPath: string, tables?: string[]): Promise<string> {
+  const text = await dataverseGet(guardODataPath(relPath, tables))
   try {
     const json = JSON.parse(text) as { value?: unknown[] }
     if (Array.isArray(json.value)) return JSON.stringify(json.value.slice(0, 100))
@@ -101,8 +105,13 @@ async function dataverseQuery(relPath: string): Promise<string> {
 // schema.json은 스키마 갱신 버튼으로 언제든 바뀔 수 있다. 서버 기동 시 1회만 빌드해
 // 캐싱하면 갱신 후에도 재시작 전까지 낡은 카탈로그를 계속 보내는 문제가 생기므로,
 // 매 요청 로컬 파일을 다시 읽어 빌드한다(카탈로그가 작아 비용은 무시할 수준).
-function buildSystemPrompt(): string {
-  const catalog = buildCompactCatalog(readSchemaFile())
+function buildSystemPrompt(tables?: string[]): string {
+  const schema = readSchemaFile()
+  const scoped = tables && tables.length > 0
+  const filtered = scoped
+    ? Object.fromEntries(Object.entries(schema).filter(([table]) => tables!.includes(table)))
+    : schema
+  const catalog = buildCompactCatalog(filtered)
   return [
     '당신은 Quali CRM 데이터 조회 전용 어시스턴트입니다.',
     '항상 한국어로 답하고, 데이터는 마크다운 표로, 숫자/금액은 천 단위 콤마로 표시하세요.',
@@ -118,9 +127,12 @@ function buildSystemPrompt(): string {
     '상태 필터가 필요하면 $filter=statecode eq 0 (활성) 을 사용하세요.',
     'Choice(선택) 컬럼은 라벨로 필터링할 수 없습니다. describe 결과의 옵션 목록에서',
     '라벨에 대응하는 숫자 코드를 찾아 필터링하세요.',
+    ...(scoped
+      ? ['', `이 프로젝트는 아래 ${tables!.length}개 테이블로 조회 범위가 제한되어 있습니다. 카탈로그 밖의 테이블은 조회할 수 없으니, 범위 밖 정보를 물으면 스코프에 없다고 답하세요.`]
+      : []),
     '',
     '[테이블 카탈로그]',
-    catalog,
+    catalog || '(등록된 테이블이 없습니다)',
   ].join('\n')
 }
 
@@ -152,7 +164,10 @@ const DESCRIBE_TABLE_TOOL: Anthropic.Tool = {
 }
 
 // 캐시된 schema.json에서 특정 테이블의 전체 스키마를 즉시 반환 (네트워크 호출 없음)
-function describeTableFromCache(table: string): string {
+function describeTableFromCache(table: string, tables?: string[]): string {
+  if (tables && tables.length > 0 && !tables.includes(table)) {
+    return `테이블 "${table}"은(는) 이 프로젝트의 스코프 밖입니다. 카탈로그에 있는 테이블만 조회하세요.`
+  }
   const data = readSchemaFile()
   const entry = data[table]
   if (!entry?.schema) return `테이블 "${table}"의 스키마 정보가 없습니다. 카탈로그의 정확한 테이블명을 사용하세요.`
@@ -223,7 +238,7 @@ export function registerChatApi(app: Express): void {
   const client = new Anthropic()   // ANTHROPIC_API_KEY 환경변수 사용
 
   app.post('/api/chat', async (req: Request, res: Response) => {
-    const { message, sessionId } = req.body as { message: string; sessionId: string }
+    const { message, sessionId, tables } = req.body as { message: string; sessionId: string; tables?: string[] }
     if (!message || !sessionId) {
       res.status(HttpStatus.BAD_REQUEST).json({ error: 'message와 sessionId가 필요합니다.' })
       return
@@ -251,7 +266,9 @@ export function registerChatApi(app: Express): void {
     const abortController = new AbortController()
     res.on('close', () => abortController.abort())
 
-    const session = historyMap.get(sessionId) ?? { messages: [], lastUsed: Date.now() }
+    // 인메모리 캐시에 없으면(서버 재시작·새 창 등) 프로젝트 파일에 저장된 히스토리로 복구한다.
+    const session = historyMap.get(sessionId)
+      ?? { messages: getProjectHistory(sessionId) as Msg[], lastUsed: Date.now() }
     // 에러 시 이 지점으로 롤백 — 반쪽 히스토리(tool_result 없는 tool_use 등)가 저장되면
     // 그 세션의 이후 요청이 전부 400으로 실패하므로, 실패한 요청의 흔적은 통째로 버린다.
     const rollbackLen = session.messages.length
@@ -275,7 +292,7 @@ export function registerChatApi(app: Express): void {
         const stream = client.messages.stream({
           model:      MODEL,
           max_tokens: MAX_TOKENS,
-          system: [{ type: 'text', text: buildSystemPrompt(), cache_control: { type: 'ephemeral' } }],
+          system: [{ type: 'text', text: buildSystemPrompt(tables), cache_control: { type: 'ephemeral' } }],
           messages: history,
           tools:    [DATAVERSE_QUERY_TOOL, DESCRIBE_TABLE_TOOL],
         }, { timeout: CHAT_TIMEOUT_MS, signal: abortController.signal })
@@ -326,12 +343,12 @@ export function registerChatApi(app: Express): void {
           try {
             if (tu.name === 'dataverse_describe_table') {
               const table = (tu.input as { table?: string }).table ?? ''
-              const out = describeTableFromCache(table)   // 캐시 조회 — 네트워크 호출 없음
+              const out = describeTableFromCache(table, tables)   // 캐시 조회 — 네트워크 호출 없음
               describeIds.add(tu.id)
               results.push({ type: 'tool_result', tool_use_id: tu.id, content: out })
             } else {
               const p = (tu.input as { path?: string }).path ?? ''
-              const out = await dataverseQuery(p)
+              const out = await dataverseQuery(p, tables)
               results.push({ type: 'tool_result', tool_use_id: tu.id, content: out })
             }
           } catch (e) {
@@ -346,6 +363,7 @@ export function registerChatApi(app: Express): void {
       session.messages = trimHistory(history)
       session.lastUsed = Date.now()
       historyMap.set(sessionId, session)
+      saveProjectHistory(sessionId, session.messages)   // 재시작해도 이어지도록 디스크에도 저장
 
       const elapsed = ((Date.now() - startMs) / 1000).toFixed(1)
       log.info('API-답변', `${answerText.slice(0, 300)} (${elapsed}초, 쿼리 ${queryCount}회, `
