@@ -47,6 +47,12 @@ flowchart LR
 서버 로컬 디스크의 JSON/텍스트 파일입니다. 사내 소규모(수십 명 이하) 단일 인스턴스
 운영을 전제로 한 의도적 단순화입니다 (§8 참고).
 
+**LLM은 Claude API(Anthropic) 하나만 씁니다** — `package.json` 의존성에 `@anthropic-ai/sdk`가
+유일한 LLM SDK이고, Groq/OpenAI/Ollama/MCP 등 다른 경로는 전혀 없습니다. (git 히스토리를
+보면 Groq·MCP·hsagent 게이트웨이 등을 거쳐온 흔적이 있지만, 전부 이 REST+커스텀 도구
+방식으로 정리되며 사용이 중단됐습니다. 그런 이름이 커밋 로그에 보여도 지금 코드와는
+무관합니다.)
+
 ---
 
 ## 2. 핵심 개념 3가지
@@ -238,6 +244,19 @@ stdout/stderr 리다이렉트까지 자동으로 합니다. `status`는 PID와 �
 
 **Linux 운영** (`scripts/server.sh`): `start|stop|restart|status|logs|cron-setup|cron-remove`.
 **PM2로 돌리는 대안**: `scripts/ecosystem.config.js` (`pm2 start ecosystem.config.js --env production`).
+
+**스키마 수동 갱신** — 웹 화면의 "↻ 스키마 갱신" 버튼과 완전히 같은 동작(`POST /api/schemas/refresh`)을 터미널에서 직접 호출할 수도 있습니다:
+```powershell
+# PowerShell
+Invoke-RestMethod -Method Post -Uri http://localhost:3000/api/schemas/refresh
+# 또는
+curl.exe -X POST http://localhost:3000/api/schemas/refresh
+```
+```bash
+# Linux/Git Bash — scripts/warmup_schema.sh가 이미 이 호출을 감싸둔 스크립트 (bash 전용)
+./scripts/warmup_schema.sh [PORT]   # 기본 3000
+```
+테이블 수가 많으면 배치 병렬 처리라도 시간이 걸립니다. 응답: `{ "updated": N, "tables": [...] }`.
 
 ---
 
