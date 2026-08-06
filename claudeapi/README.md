@@ -9,8 +9,12 @@
 ## 엔드포인트
 
 - `POST /api/chat`
-  - 요청: `{ message, sessionId }`
+  - 요청: `{ message, sessionId, tables? }` — `sessionId`는 프로젝트 id(`server/projects.ts`),
+    `tables`는 그 프로젝트의 테이블 스코프(빈 배열/미지정이면 전체 테이블)
   - 응답(SSE): `text` / `tool` / `query` / `error` / `done`
+
+프로젝트 CRUD(`/api/projects*`)는 `server/index.ts` + `server/projects.ts` 참고 —
+전체 아키텍처는 리포 루트의 [README.md](../README.md)에 정리돼 있습니다.
 
 ## 특징
 
@@ -42,7 +46,12 @@ npm run dev          # 서버 + 프론트 동시 실행
 
 ## 구현 메모
 
-- 세션별 대화 히스토리는 인메모리(`historyMap`, 최근 20메시지) — 데모용.
-  다중 인스턴스/영속화가 필요하면 외부 스토어로 교체.
+- 세션별 대화 히스토리는 인메모리(`historyMap`, 최근 20메시지)를 1차 캐시로 쓰고,
+  매 요청 후 `server/projects.ts`를 통해 `data/projects/<id>.json`에도 저장한다.
+  인메모리 캐시가 비어있으면(서버 재시작 등) 그 파일에서 복구하므로, 다중 인스턴스로
+  수평 확장하지 않는 한 재시작해도 대화 맥락이 끊기지 않는다.
 - 히스토리 트리밍은 "일반 텍스트 user 메시지" 경계에서만 자른다 —
   tool_use/tool_result 쌍이 깨지면 그 세션의 모든 후속 요청이 400으로 실패하기 때문.
+- 프로젝트에 테이블 스코프(`tables`)가 지정돼 있으면 시스템 프롬프트 카탈로그와
+  OData 가드(`guardODataPath`) 양쪽을 그 범위로 제한한다 — 모델이 스코프 밖 테이블을
+  조회하려 해도 서버가 차단하고 `tool_result` 오류로 돌려보낸다.
