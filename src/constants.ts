@@ -2,13 +2,14 @@ export const APP_NAME  = import.meta.env.VITE_APP_NAME  ?? 'CRM AI'
 export const CONN_NAME = import.meta.env.VITE_CONN_NAME ?? 'Cloud'
 
 export const API = {
-  CHAT:           '/api/chat',
-  INSTRUCTIONS:   '/api/instructions',
-  LOGS:           '/api/logs',
-  DESCRIBE:       '/api/describe',
-  TABLES:         '/api/tables',
-  SCHEMA_REFRESH: '/api/schemas/refresh',
-  PROJECTS:       '/api/projects',
+  CHAT:               '/api/chat',
+  INSTRUCTIONS:       '/api/instructions',
+  INSTRUCTIONS_DRAFT: '/api/instructions/draft',
+  LOGS:               '/api/logs',
+  DESCRIBE:           '/api/describe',
+  TABLES:             '/api/tables',
+  SCHEMA_REFRESH:     '/api/schemas/refresh',
+  PROJECTS:           '/api/projects',
 } as const
 
 export const CELLS_AUTOSAVE_DEBOUNCE_MS = 900

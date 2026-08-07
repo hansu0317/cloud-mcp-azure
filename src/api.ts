@@ -111,3 +111,9 @@ export async function saveInstructions(instructions: Instructions): Promise<void
     body:    JSON.stringify(instructions),
   })
 }
+
+// 실제 질문/답변 로그에서 뽑은 terms·examples 후보를 가져온다(저장은 안 됨 — 모달에
+// 미리 채워 보여주고 사람이 검토 후 저장). joins는 서버가 항상 빈 배열로 준다.
+export async function getInstructionsDraft(): Promise<Instructions> {
+  return fetch(API.INSTRUCTIONS_DRAFT).then(r => r.json()) as Promise<Instructions>
+}

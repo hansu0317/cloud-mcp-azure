@@ -24,6 +24,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from .chat_api import api_status, cleanup_loop, register_chat_api
 from .dataverse import dataverse_env_missing, fetch_entity_schema
+from .instructions_draft import build_instructions_draft
 from .logger import log
 from .sse import HttpStatus
 from . import projects
@@ -285,6 +286,14 @@ async def post_instructions(request: Request):
         return {"ok": True}
     except OSError as e:
         return JSONResponse({"error": str(e)}, status_code=HttpStatus.INTERNAL_SERVER_ERROR)
+
+
+# 실제 질문/답변 로그에서 terms·examples 후보를 뽑아 초안으로 반환한다(저장은 안 함 —
+# 프론트가 InstructionsModal에 미리 채워 보여주고 사람이 검토 후 /api/instructions로
+# 저장). joins는 항상 빈 배열 — backend/instructions_draft.py 모듈 docstring 참고.
+@app.get("/api/instructions/draft")
+async def get_instructions_draft():
+    return build_instructions_draft()
 
 
 # ─── API: 로그 조회 ───────────────────────────────────────────────────────────

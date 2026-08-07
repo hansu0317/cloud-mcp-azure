@@ -132,6 +132,12 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 .instr-add-col-btn { align-self: flex-end; }
 .instr-total-count { flex-shrink: 0; font-size: 10.5px; color: #64748b; white-space: nowrap; }
 
+.instr-hdr-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.instr-row-draft { background: #171310; border: 1px dashed #4a3a12; }
+.instr-row-draft:hover { background: #201a12; }
+.instr-hint-todo { color: #ca8a04; background: #1c1608; border-radius: 5px; padding: 6px 8px; margin: 0 10px 8px; }
+.instr-draft-msg { margin: 8px 16px 0; padding: 7px 10px; font-size: 11.5px; line-height: 1.5; color: #7dd3fc; background: #0d1a2e; border: 1px solid #17324d; border-radius: 6px; }
+
 /* Notebook */
 .notebook-view { flex: 1; display: flex; overflow: hidden; }
 .notebook { flex: 1; overflow-y: auto; background: #0f1117; }
