@@ -76,7 +76,10 @@ function Start-Server {
         # file, so stdout+stderr are merged into a single console.log via cmd.exe's own
         # redirection instead (runs outside PowerShell's stream machinery entirely).
         Remove-Item $ConsoleLog -ErrorAction SilentlyContinue
-        $cmdLine = 'npx.cmd tsx server/index.ts >> "' + $ConsoleLog + '" 2>&1'
+        $VenvPython = Join-Path $AppDir '.venv\Scripts\python.exe'
+        $PythonExe  = if (Test-Path $VenvPython) { $VenvPython } else { 'python' }
+        # -WorkingDirectory가 cwd를 $AppDir로 고정해주므로 backend 패키지가 -m으로 정상 해석된다.
+        $cmdLine = '"' + $PythonExe + '" -m backend.main >> "' + $ConsoleLog + '" 2>&1'
         $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', $cmdLine) `
             -WorkingDirectory $AppDir -WindowStyle Hidden -PassThru
     }

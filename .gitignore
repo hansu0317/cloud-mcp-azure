@@ -35,10 +35,11 @@ yarn-error.log*
 *.pid
 .server.pid
 
-# Python (scripts/build_pptx.py 실행 시 생성)
+# Python
 __pycache__/
 *.pyc
 *.pyo
+.venv/
 
 # 에디터 / OS
 .claude/

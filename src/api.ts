@@ -1,8 +1,7 @@
 import { marked }     from 'marked'
 import DOMPurify      from 'dompurify'
 import { API } from './constants'
-import type { Instructions, StreamChatOptions, ProjectDetail } from './types'
-import type { SseEvent, ProjectSummary } from '../shared/types'
+import type { Instructions, StreamChatOptions, ProjectDetail, SseEvent, ProjectSummary } from './types'
 
 export function renderMd(text: string): string {
   if (!text) return ''

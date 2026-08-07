@@ -16,7 +16,7 @@ flowchart LR
         UI["Sidebar / NotebookView / TableScopeModal"]
     end
 
-    subgraph Server["Express 서버 (server/, claudeapi/)"]
+    subgraph Server["FastAPI 서버 (backend/, Python)"]
         API["/api/* 라우트"]
         Guard["OData 가드\n(엔티티집합 화이트리스트 + $top 강제)"]
         Sem["Semaphore\n(동시 Claude 호출 제한)"]
@@ -47,11 +47,12 @@ flowchart LR
 서버 로컬 디스크의 JSON/텍스트 파일입니다. 사내 소규모(수십 명 이하) 단일 인스턴스
 운영을 전제로 한 의도적 단순화입니다 (§8 참고).
 
-**LLM은 Claude API(Anthropic) 하나만 씁니다** — `package.json` 의존성에 `@anthropic-ai/sdk`가
+**LLM은 Claude API(Anthropic) 하나만 씁니다** — `requirements.txt` 의존성에 `anthropic`이
 유일한 LLM SDK이고, Groq/OpenAI/Ollama/MCP 등 다른 경로는 전혀 없습니다. (git 히스토리를
 보면 Groq·MCP·hsagent 게이트웨이 등을 거쳐온 흔적이 있지만, 전부 이 REST+커스텀 도구
 방식으로 정리되며 사용이 중단됐습니다. 그런 이름이 커밋 로그에 보여도 지금 코드와는
-무관합니다.)
+무관합니다. 2026-08에 백엔드 자체도 TypeScript/Express에서 Python/FastAPI로 전환됐지만
+API 계약·데이터 파일 포맷은 그대로라 이 문서의 나머지 설명은 대부분 유효합니다.)
 
 ---
 
@@ -70,7 +71,7 @@ flowchart LR
 | `createdAt` / `updatedAt` | 타임스탬프 |
 
 사용자가 사이드바에서 🗑 눌러 명시적으로 지우기 전까지 서버 재시작·브라우저 새로고침에도
-사라지지 않습니다. 자세한 코드는 [server/projects.ts](server/projects.ts).
+사라지지 않습니다. 자세한 코드는 [backend/projects.py](backend/projects.py).
 
 ### 2.2 테이블 스코프 → TextToSQL 범위 제한
 프로젝트의 `tables`가 비어있지 않으면, 그 프로젝트로 보내는 모든 채팅 요청에서:
@@ -79,11 +80,11 @@ flowchart LR
 
 즉 모델이 스코프 밖 테이블을 "환각"으로 조회 시도해도 서버가 물리적으로 막고,
 `tool_result` 오류로 돌려보내 모델이 스스로 "그 테이블은 범위 밖"이라고 답하게 만듭니다.
-[claudeapi/chat-api.ts](claudeapi/chat-api.ts)의 `allowedEntitySets`/`guardODataPath`/`buildSystemPrompt` 참고.
+[backend/chat_api.py](backend/chat_api.py)의 `_allowed_entity_sets`/`_guard_odata_path`/`_build_system_prompt` 참고.
 
 ### 2.3 스키마 카탈로그 (LLM 미사용, 순수 REST)
 `data/schema.json`은 Dataverse의 `EntityDefinitions` 메타데이터 API를 직접 호출해
-만듭니다 (LLM 호출 전혀 없음, [server/dataverse.ts](server/dataverse.ts)의 `fetchEntitySchema`).
+만듭니다 (LLM 호출 전혀 없음, [backend/dataverse.py](backend/dataverse.py)의 `fetch_entity_schema`).
 사이드바의 "↻ 스키마 갱신" 버튼 = `POST /api/schemas/refresh`가 이 파일을 다시 채웁니다.
 
 컨텍스트(=비용) 절약을 위해 매 요청 전체 컬럼을 다 보내지 않고, **테이블명·라벨·
@@ -98,7 +99,7 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant U as 사용자(브라우저)
-    participant S as Express (/api/chat)
+    participant S as FastAPI (/api/chat)
     participant C as Claude API
     participant D as Dataverse Web API
 
@@ -110,7 +111,7 @@ sequenceDiagram
         C-->>S: SSE로 텍스트/tool_use 스트리밍
         S-->>U: SSE 그대로 중계 (text/tool/query/error/done)
         alt 도구 호출 있음
-            S->>S: guardODataPath로 검증 (화이트리스트 + $top=100 강제)
+            S->>S: _guard_odata_path로 검증 (화이트리스트 + $top=100 강제)
             S->>D: GET (읽기 전용 OData)
             D-->>S: 결과 (최대 100건 truncate)
             S->>C: tool_result로 반환 (다음 루프)
@@ -124,7 +125,7 @@ sequenceDiagram
 
 **오류 내성**: 요청이 중간에 실패하면 그 요청이 추가한 히스토리(반쪽짜리
 tool_use/tool_result)를 통째로 롤백합니다 — 안 그러면 다음 요청부터 그 세션이
-영구적으로 API 400을 반환합니다 (`rollbackLen` 처리, [claudeapi/chat-api.ts](claudeapi/chat-api.ts)).
+영구적으로 API 400을 반환합니다 (`rollback_len` 처리, [backend/chat_api.py](backend/chat_api.py)).
 
 ---
 
@@ -142,20 +143,19 @@ tool_use/tool_result)를 통째로 롤백합니다 — 안 그러면 다음 요�
 │   │   ├── NotebookCell.tsx     셀 하나(질문 입력 + 답변 출력 + 삭제확인)
 │   │   ├── QueryPanel.tsx       답변 아래 접이식 "실행된 쿼리 보기"
 │   │   └── LogModal.tsx         우측 상단에서 여는 서버 로그 뷰어(/api/logs 폴링)
-│   └── types/index.ts       프론트 전용 타입 + shared 재수출
+│   └── types/index.ts       프론트 전용 타입 (SseEvent/Instructions/ProjectSummary 등 정의)
 │
-├── server/                  백엔드 공통 인프라
-│   ├── index.ts             Express 앱 조립: 정적 서빙, 레이트리밋, 모든 /api/* 라우트
-│   ├── dataverse.ts         Dataverse 인증(client_credentials) + OData GET + 메타데이터→마크다운
-│   ├── projects.ts          프로젝트 영속화 (data/projects/*.json 읽기/쓰기)
-│   ├── logger.ts            JSON 라인 로그(logs/app.log) + 콘솔 컬러 출력
-│   ├── semaphore.ts         동시 실행 제어(대기열 + 포화 판단)
-│   └── sse.ts                Server-Sent-Events 헬퍼 + HttpStatus 상수
-│
-├── claudeapi/chat-api.ts    채팅 엔드포인트 본체: 시스템 프롬프트 빌드, 도구 루프,
+├── backend/                 백엔드 전체 (Python/FastAPI)
+│   ├── main.py              FastAPI 앱 조립: 정적 서빙, 레이트리밋, 모든 /api/* 라우트
+│   ├── dataverse.py         Dataverse 인증(client_credentials) + OData GET + 메타데이터→마크다운
+│   ├── projects.py          프로젝트 영속화 (data/projects/*.json 읽기/쓰기)
+│   ├── logger.py            JSON 라인 로그(logs/app.log) + 콘솔 컬러 출력
+│   ├── semaphore.py         동시 실행 제어(대기열 + 포화 판단)
+│   ├── sse.py                Server-Sent-Events 헬퍼 + HttpStatus 상수
+│   └── chat_api.py          채팅 엔드포인트 본체: 시스템 프롬프트 빌드, 도구 루프,
 │                             OData 가드, 히스토리 관리(트리밍/컴팩션/롤백)
 │
-├── shared/types.ts          프론트·백엔드 공용 타입(SseEvent, Instructions, ProjectSummary 등)
+├── requirements.txt         백엔드 Python 의존성 (pip install -r requirements.txt)
 │
 ├── data/                    🚫 git 추적 안 함 — 실행 중 생성되는 상태 파일
 │   ├── schema.json              테이블 스키마 캐시
@@ -225,19 +225,24 @@ tool_use/tool_result)를 통째로 롤백합니다 — 안 그러면 다음 요�
 ## 7. 실행 / 운영
 
 ```bash
+python -m venv .venv
+.venv\Scripts\activate      # Windows (bash면 source .venv/bin/activate)
+pip install -r requirements.txt
+
 npm install
-npm run dev            # 서버(tsx watch)+프론트(vite) 동시 실행, 개발용
-npm run build           # 프론트+서버 프로덕션 빌드
-npm run type-check      # tsc --noEmit (client) + tsc -p tsconfig.server.json (server)
+npm run dev             # 서버(uvicorn --reload)+프론트(vite) 동시 실행, 개발용
+npm run build            # 프론트 프로덕션 빌드 (백엔드는 Python이라 별도 빌드 불필요)
+npm run type-check       # tsc --noEmit (프론트만 — 백엔드는 타입 검사 없음)
 ```
 
 **Windows 운영** (`scripts/server.ps1`):
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\server.ps1 start|stop|restart|status|logs
 ```
-`start`/`restart`는 프론트 빌드 → cmd.exe로 tsx 백그라운드 실행 → `logs/console.log`로
-stdout/stderr 리다이렉트까지 자동으로 합니다. `status`는 PID와 최근 app.log 5줄을,
-`logs`는 실시간 tail을 UTF-8로 정확히 보여줍니다.
+`start`/`restart`는 프론트 빌드 → cmd.exe로 `python -m backend.main` 백그라운드 실행(있으면
+`.venv\Scripts\python.exe` 사용) → `logs/console.log`로 stdout/stderr 리다이렉트까지
+자동으로 합니다. `status`는 PID와 최근 app.log 5줄을, `logs`는 실시간 tail을 UTF-8로
+정확히 보여줍니다.
 
 > PowerShell 실행 정책이 `Restricted`면 프로필/스크립트 로드가 막힙니다.
 > `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` 한 번 해두세요(관리자 권한 불필요).
@@ -264,9 +269,9 @@ curl.exe -X POST http://localhost:3000/api/schemas/refresh
 
 - **DB 없음, 단일 인스턴스 전제**: 모든 상태가 로컬 파일이라 여러 서버 인스턴스로
   수평 확장하면 상태가 안 맞습니다. 수십 명 이하 사내 도구 목적엔 충분.
-- **동시 쓰기 보호는 "동기 fs 호출"에만 의존**: `server/projects.ts`의 읽기-수정-쓰기가
-  전부 동기 함수라 Node 이벤트 루프 특성상 안전하지만, 파일 잠금 같은 진짜 트랜잭션은
-  없습니다.
+- **동시 쓰기 보호는 "동기 파일 I/O"에만 의존**: `backend/projects.py`의 읽기-수정-쓰기가
+  전부 동기 함수라 이벤트 루프의 한 틱 안에서 끊기지 않는 특성상 안전하지만, 파일 잠금
+  같은 진짜 트랜잭션은 없습니다.
 - **인증은 선택사항**: `API_KEY` 설정 안 하면 사내망에 접근 가능한 누구나 사용 가능.
 - **`MAX_SESSIONS` 정리는 인메모리 캐시만 비움**: `data/projects/*.json` 파일 자체는
   사용자가 사이드바에서 지워야만 삭제됩니다.

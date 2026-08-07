@@ -17,7 +17,7 @@ case "$1" in
       echo "⚠️  서버가 이미 실행 중입니다. (PID: $(cat "$PID_FILE"))"
       exit 1
     fi
-    # 프론트엔드 빌드 (dist/) — tsx로 소스 직접 실행하므로 서버 빌드는 불필요
+    # 프론트엔드 빌드 (dist/) — 백엔드(Python)는 별도 빌드 불필요, 소스 직접 실행
     echo "🔨 프론트엔드 빌드 중..."
     if ! ( cd "$APP_DIR" && npm run build:client ) >> "$LOG_FILE" 2>&1; then
       echo "❌ 프론트엔드 빌드 실패. 로그를 확인하세요:"
@@ -25,7 +25,10 @@ case "$1" in
       exit 1
     fi
     echo "▶  서버 시작 중..."
-    nohup npx --prefix "$APP_DIR" tsx "$APP_DIR/server/index.ts" >> "$LOG_FILE" 2>&1 &
+    PYTHON_BIN="$APP_DIR/.venv/bin/python"
+    [ -x "$PYTHON_BIN" ] || PYTHON_BIN="$(command -v python3 || command -v python)"
+    # PYTHONPATH로 backend 패키지를 찾게 해 호출측 cwd에 의존하지 않는다(cd 없이도 -m 임포트가 성립).
+    nohup env PYTHONPATH="$APP_DIR" "$PYTHON_BIN" -m backend.main >> "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     sleep 1
     if kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
