@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { getInstructionsDraft } from '../api'
+import { API } from '../constants'
 import type { Instructions, JoinDef, TermDef, ExampleDef } from '../types'
 
 interface Props {
@@ -11,13 +12,36 @@ interface Props {
 
 type Tab = 'joins' | 'terms' | 'examples'
 
+interface TableMeta  { name: string; label: string; domain: string }
+interface ColumnInfo { name: string; type: string; desc: string; options?: string[] }
+
 const EMPTY_JOIN:    JoinDef    = { fromTable: '', fromCol: '', toTable: '', toCol: '', label: '' }
 const EMPTY_TERM:    TermDef    = { table: '', column: '', term: '', def: '' }
 const EMPTY_EXAMPLE: ExampleDef = { question: '', answer: '' }
 
+// backend/dataverse.py의 fetchEntitySchema()가 만드는 마크다운 표
+// ("| 컬럼명 | 타입 | 한국어 설명 |" 헤더 + 구분선 + 데이터 행)를 그대로 파싱한다.
+// Picklist 컬럼은 설명에 "(옵션1 / 옵션2 / ...)"가 붙어 나오므로 그것도 뽑아둔다 —
+// 용어 탭에서 그 옵션을 클릭 한 번으로 채울 수 있게 하기 위해서다.
+function parseSchemaMarkdown(md: string): ColumnInfo[] {
+  const lines = md.split('\n').filter(l => l.trim().startsWith('|'))
+  return lines.slice(2)   // [0]=헤더, [1]=구분선(---) 제외
+    .map(line => {
+      const [name = '', type = '', descRaw = ''] = line.split('|').map(c => c.trim()).slice(1, -1)
+      const optMatch = descRaw.match(/\(([^()]+\/[^()]+)\)/)
+      const options = optMatch ? optMatch[1].split('/').map(s => s.trim()) : undefined
+      return { name, type, desc: descRaw, options }
+    })
+    .filter(c => c.name)
+}
+
 // "지침" 설정 팝업 — 테이블 조인 관계·컬럼 용어·질문 예시를 등록해두면 매 세션 첫
 // 메시지에 자동으로 붙어(src/api.ts의 buildMessage) 모델이 참고한다. TableScopeModal과
 // 같은 모달 셸(.ts-modal*)을 재사용해 기존 UI 톤을 그대로 유지한다.
+//
+// 조인·용어 탭은 테이블/컬럼의 정확한 논리명(new_q3, customerid 같은)을 몰라도 되도록
+// ①②③… 순서로 드롭다운을 채워나가는 방식이다 — 카탈로그(GET /api/tables)와 컬럼
+// 설명(GET /api/describe)을 그대로 재사용해 새 서버 코드 없이 프론트에서만 구현했다.
 export default function InstructionsModal({ instructions, onSave, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('joins')
   const [joins,    setJoins]    = useState<JoinDef[]>(instructions.joins)
@@ -31,6 +55,33 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
 
   const [draftLoading, setDraftLoading] = useState(false)
   const [draftMsg,      setDraftMsg]     = useState<string | null>(null)
+
+  // 테이블 목록 + 컬럼 설명 캐시 — 드롭다운을 채우는 용도. 컬럼은 테이블을 고른
+  // 시점에 그때그때 불러온다(describe는 서버 캐시라 사실상 즉시 응답).
+  const [catalog, setCatalog] = useState<TableMeta[]>([])
+  const [columnsCache,   setColumnsCache]   = useState<Record<string, ColumnInfo[]>>({})
+  const [columnsLoading, setColumnsLoading] = useState<Record<string, boolean>>({})
+
+  useEffect(() => {
+    fetch(API.TABLES)
+      .then(r => r.json())
+      .then((d: { tables: TableMeta[] }) => setCatalog(d.tables))
+      .catch(() => setCatalog([]))
+  }, [])
+
+  const domains = useMemo(() => [...new Set(catalog.map(t => t.domain))], [catalog])
+
+  const ensureColumns = (table: string) => {
+    if (!table || columnsCache[table] || columnsLoading[table]) return
+    setColumnsLoading(prev => ({ ...prev, [table]: true }))
+    fetch(`${API.DESCRIBE}?table=${encodeURIComponent(table)}`)
+      .then(r => r.json())
+      .then((d: { schema?: string }) => {
+        setColumnsCache(prev => ({ ...prev, [table]: d.schema ? parseSchemaMarkdown(d.schema) : [] }))
+      })
+      .catch(() => setColumnsCache(prev => ({ ...prev, [table]: [] })))
+      .finally(() => setColumnsLoading(prev => ({ ...prev, [table]: false })))
+  }
 
   // 실제 질문/답변 로그에서 뽑은 후보를 기존 목록에 이어 붙인다(덮어쓰지 않음) —
   // 저장은 안 하고 화면에만 미리 채워주므로, 사람이 훑어보고 지우거나 고친 뒤
@@ -92,6 +143,12 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
 
   const totalCount = joins.length + terms.length + examples.length
 
+  const tableLabel = (name: string) => catalog.find(t => t.name === name)?.label
+  const columnDesc = (table: string, col: string) => columnsCache[table]?.find(c => c.name === col)?.desc
+
+  const termColumns = columnsCache[termDraft.table] ?? []
+  const termColumnOptions = termColumns.find(c => c.name === termDraft.column)?.options
+
   return createPortal(
     <div className="ts-modal" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="ts-modal-inner instr-modal-inner">
@@ -130,39 +187,125 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
         <div className="ts-modal-body instr-modal-body">
           {tab === 'joins' && (
             <>
-              <div className="instr-hint">두 테이블을 어떤 컬럼으로 연결해야 하는지 알려주세요. 예: 영업기회(new_q3)의 customerid = 거래처(new_q1)의 new_q1id</div>
-              <div className="instr-hint instr-hint-todo">✨ 초안 생성은 아직 조인 관계를 채워주지 않습니다 — Lookup 컬럼이 실제로 어느 테이블을 가리키는지 Dataverse에서 별도로 조회해야 해서 다음 작업으로 미뤄뒀습니다. 지금은 직접 입력해주세요.</div>
+              <div className="instr-hint">두 테이블이 어떤 컬럼으로 이어지는지, 이름을 몰라도 아래에서 순서대로 골라주세요.</div>
+              <div className="instr-hint instr-hint-todo">✨ 초안 생성은 아직 조인 관계를 채워주지 않습니다 — Lookup 컬럼이 실제로 어느 테이블을 가리키는지 Dataverse에서 별도로 조회해야 해서 다음 작업으로 미뤄뒀습니다. 지금은 아래에서 직접 골라주세요.</div>
               {joins.length === 0 && <div className="sb-empty">등록된 조인 관계가 없습니다</div>}
               {joins.map((j, i) => (
                 <div className="instr-row" key={i}>
                   <span className="instr-row-text">
-                    <b>{j.fromTable}</b>.{j.fromCol} → <b>{j.toTable}</b>.{j.toCol}
+                    <b>{tableLabel(j.fromTable) ?? j.fromTable}</b>.{j.fromCol} → <b>{tableLabel(j.toTable) ?? j.toTable}</b>.{j.toCol}
                     {j.label && <span className="instr-row-label"> ({j.label})</span>}
                   </span>
                   <button className="instr-row-del" title="삭제" onClick={() => setJoins(prev => prev.filter((_, idx) => idx !== i))}>×</button>
                 </div>
               ))}
-              <div className="instr-add-row">
-                <input className="proj-new-input instr-input-sm" placeholder="시작 테이블 (new_q3)" value={joinDraft.fromTable} onChange={e => setJoinDraft(d => ({ ...d, fromTable: e.target.value }))} />
-                <input className="proj-new-input instr-input-sm" placeholder="컬럼 (customerid)" value={joinDraft.fromCol} onChange={e => setJoinDraft(d => ({ ...d, fromCol: e.target.value }))} />
-                <span className="instr-arrow">→</span>
-                <input className="proj-new-input instr-input-sm" placeholder="연결 테이블 (new_q1)" value={joinDraft.toTable} onChange={e => setJoinDraft(d => ({ ...d, toTable: e.target.value }))} />
-                <input className="proj-new-input instr-input-sm" placeholder="컬럼 (new_q1id)" value={joinDraft.toCol} onChange={e => setJoinDraft(d => ({ ...d, toCol: e.target.value }))} />
-                <input
-                  className="proj-new-input instr-input-sm"
-                  placeholder="설명(선택, 거래처)"
-                  value={joinDraft.label}
-                  onChange={e => setJoinDraft(d => ({ ...d, label: e.target.value }))}
-                  onKeyDown={e => { if (e.key === 'Enter') addJoin() }}
-                />
-                <button className="btn btn-sm primary" onClick={addJoin}>추가</button>
+
+              <div className="instr-wizard">
+                <div className="instr-step">
+                  <span className="instr-step-num">1</span>
+                  <div className="instr-step-body">
+                    <label className="instr-step-q">어떤 테이블에서 시작할까요?</label>
+                    <select
+                      className="instr-select"
+                      value={joinDraft.fromTable}
+                      onChange={e => { const v = e.target.value; setJoinDraft(d => ({ ...d, fromTable: v, fromCol: '' })); ensureColumns(v) }}
+                    >
+                      <option value="">테이블 선택…</option>
+                      {domains.map(domain => (
+                        <optgroup label={domain} key={domain}>
+                          {catalog.filter(t => t.domain === domain).map(t => (
+                            <option value={t.name} key={t.name}>{t.label} ({t.name})</option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {joinDraft.fromTable && (
+                  <div className="instr-step">
+                    <span className="instr-step-num">2</span>
+                    <div className="instr-step-body">
+                      <label className="instr-step-q">그 테이블의 어떤 컬럼인가요?</label>
+                      <select
+                        className="instr-select"
+                        value={joinDraft.fromCol}
+                        onChange={e => setJoinDraft(d => ({ ...d, fromCol: e.target.value }))}
+                      >
+                        <option value="">{columnsLoading[joinDraft.fromTable] ? '불러오는 중…' : '컬럼 선택…'}</option>
+                        {(columnsCache[joinDraft.fromTable] ?? []).map(c => (
+                          <option value={c.name} key={c.name}>{c.name} — {c.desc}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                {joinDraft.fromCol && (
+                  <div className="instr-step">
+                    <span className="instr-step-num">3</span>
+                    <div className="instr-step-body">
+                      <label className="instr-step-q">어떤 테이블과 연결되나요?</label>
+                      <select
+                        className="instr-select"
+                        value={joinDraft.toTable}
+                        onChange={e => { const v = e.target.value; setJoinDraft(d => ({ ...d, toTable: v, toCol: '' })); ensureColumns(v) }}
+                      >
+                        <option value="">테이블 선택…</option>
+                        {domains.map(domain => (
+                          <optgroup label={domain} key={domain}>
+                            {catalog.filter(t => t.domain === domain).map(t => (
+                              <option value={t.name} key={t.name}>{t.label} ({t.name})</option>
+                            ))}
+                          </optgroup>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                {joinDraft.toTable && (
+                  <div className="instr-step">
+                    <span className="instr-step-num">4</span>
+                    <div className="instr-step-body">
+                      <label className="instr-step-q">그 테이블의 어떤 컬럼인가요?</label>
+                      <select
+                        className="instr-select"
+                        value={joinDraft.toCol}
+                        onChange={e => setJoinDraft(d => ({ ...d, toCol: e.target.value }))}
+                      >
+                        <option value="">{columnsLoading[joinDraft.toTable] ? '불러오는 중…' : '컬럼 선택…'}</option>
+                        {(columnsCache[joinDraft.toTable] ?? []).map(c => (
+                          <option value={c.name} key={c.name}>{c.name} — {c.desc}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                {joinDraft.toCol && (
+                  <div className="instr-step">
+                    <span className="instr-step-num">5</span>
+                    <div className="instr-step-body">
+                      <label className="instr-step-q">이 관계를 뭐라고 부르면 좋을까요? (선택)</label>
+                      <input
+                        className="proj-new-input instr-select"
+                        placeholder="예: 거래처"
+                        value={joinDraft.label}
+                        onChange={e => setJoinDraft(d => ({ ...d, label: e.target.value }))}
+                        onKeyDown={e => { if (e.key === 'Enter') addJoin() }}
+                      />
+                      <button className="btn btn-sm primary instr-step-add" onClick={addJoin}>이 관계 추가</button>
+                    </div>
+                  </div>
+                )}
               </div>
             </>
           )}
 
           {tab === 'terms' && (
             <>
-              <div className="instr-hint">컬럼 값이나 코드가 실제로 무엇을 뜻하는지 알려주세요. 예: statuscode 값 1은 "진행중"</div>
+              <div className="instr-hint">컬럼 값이나 코드가 업무에서 실제로 뭐라고 불리는지, 아래에서 순서대로 골라 알려주세요.</div>
               {terms.length === 0 && <div className="sb-empty">등록된 용어가 없습니다</div>}
               {terms.map((t, i) => {
                 const incomplete = !t.table.trim() || !t.column.trim() || !t.def.trim()
@@ -171,31 +314,111 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
                     <span className="instr-row-text">
                       {incomplete
                         ? <>✨ "{t.term}" <span className="instr-row-label">— 초안 후보, 테이블·컬럼·설명을 채워주세요</span></>
-                        : <><b>{t.table}</b>.{t.column} = "{t.term}" → {t.def}</>}
+                        : <><b>{tableLabel(t.table) ?? t.table}</b>.{t.column} = "{t.term}" → {t.def}</>}
                     </span>
                     <button className="instr-row-del" title="삭제" onClick={() => setTerms(prev => prev.filter((_, idx) => idx !== i))}>×</button>
                   </div>
                 )
               })}
-              <div className="instr-add-row">
-                <input className="proj-new-input instr-input-sm" placeholder="테이블 (new_q3)" value={termDraft.table} onChange={e => setTermDraft(d => ({ ...d, table: e.target.value }))} />
-                <input className="proj-new-input instr-input-sm" placeholder="컬럼 (statuscode)" value={termDraft.column} onChange={e => setTermDraft(d => ({ ...d, column: e.target.value }))} />
-                <input className="proj-new-input instr-input-sm" placeholder="용어 (진행중)" value={termDraft.term} onChange={e => setTermDraft(d => ({ ...d, term: e.target.value }))} />
-                <input
-                  className="proj-new-input instr-input-sm instr-input-wide"
-                  placeholder="설명 (값이 1이면 진행중 상태)"
-                  value={termDraft.def}
-                  onChange={e => setTermDraft(d => ({ ...d, def: e.target.value }))}
-                  onKeyDown={e => { if (e.key === 'Enter') addTerm() }}
-                />
-                <button className="btn btn-sm primary" onClick={addTerm}>추가</button>
+
+              <div className="instr-wizard">
+                <div className="instr-step">
+                  <span className="instr-step-num">1</span>
+                  <div className="instr-step-body">
+                    <label className="instr-step-q">어떤 테이블인가요?</label>
+                    <select
+                      className="instr-select"
+                      value={termDraft.table}
+                      onChange={e => { const v = e.target.value; setTermDraft(d => ({ ...d, table: v, column: '' })); ensureColumns(v) }}
+                    >
+                      <option value="">테이블 선택…</option>
+                      {domains.map(domain => (
+                        <optgroup label={domain} key={domain}>
+                          {catalog.filter(t => t.domain === domain).map(t => (
+                            <option value={t.name} key={t.name}>{t.label} ({t.name})</option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {termDraft.table && (
+                  <div className="instr-step">
+                    <span className="instr-step-num">2</span>
+                    <div className="instr-step-body">
+                      <label className="instr-step-q">그 테이블의 어떤 컬럼인가요?</label>
+                      <select
+                        className="instr-select"
+                        value={termDraft.column}
+                        onChange={e => setTermDraft(d => ({ ...d, column: e.target.value, term: '' }))}
+                      >
+                        <option value="">{columnsLoading[termDraft.table] ? '불러오는 중…' : '컬럼 선택…'}</option>
+                        {termColumns.map(c => (
+                          <option value={c.name} key={c.name}>{c.name} — {c.desc}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                {termDraft.column && (
+                  <div className="instr-step">
+                    <span className="instr-step-num">3</span>
+                    <div className="instr-step-body">
+                      <label className="instr-step-q">업무에서는 이 컬럼 값을 뭐라고 부르나요?</label>
+                      {termColumnOptions && (
+                        <>
+                          <div className="instr-hint" style={{ padding: '0 0 6px' }}>
+                            {columnDesc(termDraft.table, termDraft.column)}에 등록된 선택값입니다 — 클릭하면 바로 채워집니다
+                          </div>
+                          <div className="instr-chip-row">
+                            {termColumnOptions.map(opt => (
+                              <button
+                                type="button"
+                                key={opt}
+                                className={`instr-chip${termDraft.term === opt ? ' active' : ''}`}
+                                onClick={() => setTermDraft(d => ({ ...d, term: opt }))}
+                              >
+                                {opt}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                      <input
+                        className="proj-new-input instr-select"
+                        placeholder="예: 진행중 (또는 위에서 선택)"
+                        value={termDraft.term}
+                        onChange={e => setTermDraft(d => ({ ...d, term: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {termDraft.term && (
+                  <div className="instr-step">
+                    <span className="instr-step-num">4</span>
+                    <div className="instr-step-body">
+                      <label className="instr-step-q">그게 정확히 어떤 뜻인가요?</label>
+                      <input
+                        className="proj-new-input instr-select"
+                        placeholder="예: 값이 1이면 진행중 상태"
+                        value={termDraft.def}
+                        onChange={e => setTermDraft(d => ({ ...d, def: e.target.value }))}
+                        onKeyDown={e => { if (e.key === 'Enter') addTerm() }}
+                      />
+                      <button className="btn btn-sm primary instr-step-add" onClick={addTerm}>이 용어 추가</button>
+                    </div>
+                  </div>
+                )}
               </div>
             </>
           )}
 
           {tab === 'examples' && (
             <>
-              <div className="instr-hint">자주 묻는 질문과 원하는 답변 형태를 예시로 보여주면 비슷한 질문에 더 잘 답합니다.</div>
+              <div className="instr-hint">자주 묻는 질문과 원하는 답변 형태를 예시로 보여주면 비슷한 질문에 더 잘 답합니다. 뭘 써야 할지 모르겠으면 위의 "✨ 초안 생성"부터 눌러보세요.</div>
               {examples.length === 0 && <div className="sb-empty">등록된 예시가 없습니다</div>}
               {examples.map((ex, i) => (
                 <div className="instr-row instr-row-example" key={i}>
