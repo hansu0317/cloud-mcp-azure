@@ -79,7 +79,10 @@ function Start-Server {
         $VenvPython = Join-Path $AppDir '.venv\Scripts\python.exe'
         $PythonExe  = if (Test-Path $VenvPython) { $VenvPython } else { 'python' }
         # -WorkingDirectory가 cwd를 $AppDir로 고정해주므로 backend 패키지가 -m으로 정상 해석된다.
-        $cmdLine = '"' + $PythonExe + '" -m backend.main >> "' + $ConsoleLog + '" 2>&1'
+        # PythonExe를 따옴표로 감싸면 안 됨 — Start-Process -ArgumentList가 문자열 인자를
+        # 다시 한번 따옴표로 감싸면서 중첩 따옴표가 깨져 cmd.exe가 즉시 종료해버린다
+        # (경로에 공백이 없으므로 따옴표 없이도 안전).
+        $cmdLine = $PythonExe + ' -m backend.main >> "' + $ConsoleLog + '" 2>&1'
         $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', $cmdLine) `
             -WorkingDirectory $AppDir -WindowStyle Hidden -PassThru
     }

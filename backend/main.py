@@ -364,8 +364,14 @@ async def spa_fallback(full_path: str):
 if __name__ == "__main__":
     import uvicorn
 
+    # 문자열("backend.main:app")로 넘기면 uvicorn이 이 모듈을 "backend.main" 이름으로
+    # 다시 import한다 — `python -m backend.main`으로 실행 중인 이 프로세스는 이미
+    # 이 모듈을 "__main__"이라는 별도 이름으로 한 번 실행한 상태라, sys.modules 캐시가
+    # 안 맞아 모듈 전체(스키마 카탈로그 로드, /api/chat 라우트 등록 등)가 한 번 더
+    # 통째로 재실행된다(reload=False라도 마찬가지). 이미 만들어진 app 객체를 직접
+    # 넘기면 재-import가 없어 정확히 한 번만 실행된다.
     uvicorn.run(
-        "backend.main:app",
+        app,
         host="0.0.0.0",
         port=PORT,
         proxy_headers=True,             # nginx 등 리버스 프록시 뒤에서 X-Forwarded-* 신뢰 (Express의 trust proxy 대응)
