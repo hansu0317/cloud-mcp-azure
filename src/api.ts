@@ -103,3 +103,12 @@ export async function updateProject(
 export async function deleteProject(id: string): Promise<void> {
   await fetch(`${API.PROJECTS}/${id}`, { method: 'DELETE' })
 }
+
+// ─── 지침 (조인 관계·용어·예시) — InstructionsModal이 씀 ────────────────────
+export async function saveInstructions(instructions: Instructions): Promise<void> {
+  await fetch(API.INSTRUCTIONS, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(instructions),
+  })
+}

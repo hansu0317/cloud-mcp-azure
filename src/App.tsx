@@ -1,10 +1,12 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import Header       from './components/Header'
-import Sidebar      from './components/Sidebar'
-import NotebookView from './components/NotebookView'
+import Header             from './components/Header'
+import Sidebar            from './components/Sidebar'
+import NotebookView       from './components/NotebookView'
+import InstructionsModal  from './components/InstructionsModal'
 import { API, TOAST_DURATION_MS } from './constants'
 import {
   listProjects, createProject, getProject, updateProject, deleteProject as apiDeleteProject,
+  saveInstructions,
 } from './api'
 import type { Instructions, NotebookHandle, ProjectSummary, ProjectDetail, Cell } from './types'
 import './App.css'
@@ -19,6 +21,7 @@ export default function App() {
   const [activeProject, setActiveProject] = useState<ProjectDetail | null>(null)
   const [instructions,  setInstructions]  = useState<Instructions>({ joins: [], terms: [], examples: [] })
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [showInstructions, setShowInstructions] = useState(false)
   const [toast,         setToast]         = useState<string | null>(null)
 
   const toastTimer  = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -127,12 +130,21 @@ export default function App() {
     setSidebarCollapsed(false)
   }, [])
 
+  // 저장 성공 시 App 상태도 갱신 — NotebookView가 prop으로 받는 instructions가
+  // 즉시 최신화되어 다음 질문부터 바로 반영된다(재접속 불필요).
+  const handleSaveInstructions = useCallback(async (next: Instructions) => {
+    await saveInstructions(next)
+    setInstructions(next)
+    showToast('지침이 저장됐습니다')
+  }, [showToast])
+
   return (
     <div className="app">
       <Header
         activeProjectName={activeProject?.name ?? ''}
         onOpenProjects={openProjectsPanel}
         onToggleSidebar={() => setSidebarCollapsed(c => !c)}
+        onOpenInstructions={() => setShowInstructions(true)}
         notebookRef={notebookRef}
       />
       <div className="body">
@@ -161,6 +173,14 @@ export default function App() {
       </div>
 
       {toast && <div className="toast">{toast}</div>}
+
+      {showInstructions && (
+        <InstructionsModal
+          instructions={instructions}
+          onSave={handleSaveInstructions}
+          onClose={() => setShowInstructions(false)}
+        />
+      )}
     </div>
   )
 }
