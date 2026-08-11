@@ -35,6 +35,38 @@ function parseSchemaMarkdown(md: string): ColumnInfo[] {
     .filter(c => c.name)
 }
 
+// 조인 탭(2회) · 용어 탭(1회)에서 반복되던 "테이블 선택" 드롭다운을 하나로 통합.
+function TableSelect({ value, catalog, domains, onChange }: {
+  value: string; catalog: TableMeta[]; domains: string[]; onChange: (table: string) => void
+}) {
+  return (
+    <select className="instr-select" value={value} onChange={e => onChange(e.target.value)}>
+      <option value="">테이블 선택…</option>
+      {domains.map(domain => (
+        <optgroup label={domain} key={domain}>
+          {catalog.filter(t => t.domain === domain).map(t => (
+            <option value={t.name} key={t.name}>{t.label} ({t.name})</option>
+          ))}
+        </optgroup>
+      ))}
+    </select>
+  )
+}
+
+// 마찬가지로 반복되던 "컬럼 선택" 드롭다운 통합.
+function ColumnSelect({ value, columns, loading, onChange }: {
+  value: string; columns: ColumnInfo[]; loading: boolean; onChange: (col: string) => void
+}) {
+  return (
+    <select className="instr-select" value={value} onChange={e => onChange(e.target.value)}>
+      <option value="">{loading ? '불러오는 중…' : '컬럼 선택…'}</option>
+      {columns.map(c => (
+        <option value={c.name} key={c.name}>{c.name} — {c.desc}</option>
+      ))}
+    </select>
+  )
+}
+
 // "지침" 설정 팝업 — 테이블 조인 관계·컬럼 용어·질문 예시를 등록해두면 매 세션 첫
 // 메시지에 자동으로 붙어(src/api.ts의 buildMessage) 모델이 참고한다. TableScopeModal과
 // 같은 모달 셸(.ts-modal*)을 재사용해 기존 UI 톤을 그대로 유지한다.
@@ -205,20 +237,12 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
                   <span className="instr-step-num">1</span>
                   <div className="instr-step-body">
                     <label className="instr-step-q">어떤 테이블에서 시작할까요?</label>
-                    <select
-                      className="instr-select"
+                    <TableSelect
                       value={joinDraft.fromTable}
-                      onChange={e => { const v = e.target.value; setJoinDraft(d => ({ ...d, fromTable: v, fromCol: '' })); ensureColumns(v) }}
-                    >
-                      <option value="">테이블 선택…</option>
-                      {domains.map(domain => (
-                        <optgroup label={domain} key={domain}>
-                          {catalog.filter(t => t.domain === domain).map(t => (
-                            <option value={t.name} key={t.name}>{t.label} ({t.name})</option>
-                          ))}
-                        </optgroup>
-                      ))}
-                    </select>
+                      catalog={catalog}
+                      domains={domains}
+                      onChange={v => { setJoinDraft(d => ({ ...d, fromTable: v, fromCol: '' })); ensureColumns(v) }}
+                    />
                   </div>
                 </div>
 
@@ -227,16 +251,12 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
                     <span className="instr-step-num">2</span>
                     <div className="instr-step-body">
                       <label className="instr-step-q">그 테이블의 어떤 컬럼인가요?</label>
-                      <select
-                        className="instr-select"
+                      <ColumnSelect
                         value={joinDraft.fromCol}
-                        onChange={e => setJoinDraft(d => ({ ...d, fromCol: e.target.value }))}
-                      >
-                        <option value="">{columnsLoading[joinDraft.fromTable] ? '불러오는 중…' : '컬럼 선택…'}</option>
-                        {(columnsCache[joinDraft.fromTable] ?? []).map(c => (
-                          <option value={c.name} key={c.name}>{c.name} — {c.desc}</option>
-                        ))}
-                      </select>
+                        columns={columnsCache[joinDraft.fromTable] ?? []}
+                        loading={!!columnsLoading[joinDraft.fromTable]}
+                        onChange={v => setJoinDraft(d => ({ ...d, fromCol: v }))}
+                      />
                     </div>
                   </div>
                 )}
@@ -246,20 +266,12 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
                     <span className="instr-step-num">3</span>
                     <div className="instr-step-body">
                       <label className="instr-step-q">어떤 테이블과 연결되나요?</label>
-                      <select
-                        className="instr-select"
+                      <TableSelect
                         value={joinDraft.toTable}
-                        onChange={e => { const v = e.target.value; setJoinDraft(d => ({ ...d, toTable: v, toCol: '' })); ensureColumns(v) }}
-                      >
-                        <option value="">테이블 선택…</option>
-                        {domains.map(domain => (
-                          <optgroup label={domain} key={domain}>
-                            {catalog.filter(t => t.domain === domain).map(t => (
-                              <option value={t.name} key={t.name}>{t.label} ({t.name})</option>
-                            ))}
-                          </optgroup>
-                        ))}
-                      </select>
+                        catalog={catalog}
+                        domains={domains}
+                        onChange={v => { setJoinDraft(d => ({ ...d, toTable: v, toCol: '' })); ensureColumns(v) }}
+                      />
                     </div>
                   </div>
                 )}
@@ -269,16 +281,12 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
                     <span className="instr-step-num">4</span>
                     <div className="instr-step-body">
                       <label className="instr-step-q">그 테이블의 어떤 컬럼인가요?</label>
-                      <select
-                        className="instr-select"
+                      <ColumnSelect
                         value={joinDraft.toCol}
-                        onChange={e => setJoinDraft(d => ({ ...d, toCol: e.target.value }))}
-                      >
-                        <option value="">{columnsLoading[joinDraft.toTable] ? '불러오는 중…' : '컬럼 선택…'}</option>
-                        {(columnsCache[joinDraft.toTable] ?? []).map(c => (
-                          <option value={c.name} key={c.name}>{c.name} — {c.desc}</option>
-                        ))}
-                      </select>
+                        columns={columnsCache[joinDraft.toTable] ?? []}
+                        loading={!!columnsLoading[joinDraft.toTable]}
+                        onChange={v => setJoinDraft(d => ({ ...d, toCol: v }))}
+                      />
                     </div>
                   </div>
                 )}
@@ -326,20 +334,12 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
                   <span className="instr-step-num">1</span>
                   <div className="instr-step-body">
                     <label className="instr-step-q">어떤 테이블인가요?</label>
-                    <select
-                      className="instr-select"
+                    <TableSelect
                       value={termDraft.table}
-                      onChange={e => { const v = e.target.value; setTermDraft(d => ({ ...d, table: v, column: '' })); ensureColumns(v) }}
-                    >
-                      <option value="">테이블 선택…</option>
-                      {domains.map(domain => (
-                        <optgroup label={domain} key={domain}>
-                          {catalog.filter(t => t.domain === domain).map(t => (
-                            <option value={t.name} key={t.name}>{t.label} ({t.name})</option>
-                          ))}
-                        </optgroup>
-                      ))}
-                    </select>
+                      catalog={catalog}
+                      domains={domains}
+                      onChange={v => { setTermDraft(d => ({ ...d, table: v, column: '' })); ensureColumns(v) }}
+                    />
                   </div>
                 </div>
 
@@ -348,16 +348,12 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
                     <span className="instr-step-num">2</span>
                     <div className="instr-step-body">
                       <label className="instr-step-q">그 테이블의 어떤 컬럼인가요?</label>
-                      <select
-                        className="instr-select"
+                      <ColumnSelect
                         value={termDraft.column}
-                        onChange={e => setTermDraft(d => ({ ...d, column: e.target.value, term: '' }))}
-                      >
-                        <option value="">{columnsLoading[termDraft.table] ? '불러오는 중…' : '컬럼 선택…'}</option>
-                        {termColumns.map(c => (
-                          <option value={c.name} key={c.name}>{c.name} — {c.desc}</option>
-                        ))}
-                      </select>
+                        columns={termColumns}
+                        loading={!!columnsLoading[termDraft.table]}
+                        onChange={v => setTermDraft(d => ({ ...d, column: v, term: '' }))}
+                      />
                     </div>
                   </div>
                 )}
