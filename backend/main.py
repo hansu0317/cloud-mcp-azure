@@ -37,7 +37,6 @@ RL_MAX = int(os.environ.get("RATE_LIMIT_MAX", "20"))
 API_KEY = os.environ.get("API_KEY", "")
 
 CWD = Path.cwd()
-INST_FILE = CWD / "data" / "instructions.json"
 SCHEMA_FILE = CWD / "data" / "schema.json"
 DIST_DIR = CWD / "dist"
 DOCS_DIR = CWD / "docs"
@@ -229,7 +228,10 @@ async def get_project_route(project_id: str):
 @app.patch("/api/projects/{project_id}")
 async def update_project_route(project_id: str, request: Request):
     body = await request.json()
-    updated = projects.update_project(project_id, name=body.get("name"), tables=body.get("tables"), cells=body.get("cells"))
+    updated = projects.update_project(
+        project_id, name=body.get("name"), tables=body.get("tables"),
+        instructions=body.get("instructions"), cells=body.get("cells"),
+    )
     if updated is None:
         return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
     return updated
@@ -268,26 +270,12 @@ async def describe_route(table: str | None = None):
             pending_describe.pop(table, None)
 
 
-# ─── API: 지침 ────────────────────────────────────────────────────────────────
-def _read_instructions():
-    return _read_json_file(INST_FILE, {"joins": [], "terms": [], "examples": []})
-
-
-@app.get("/api/instructions")
-async def get_instructions():
-    return _read_instructions()
-
-
-@app.post("/api/instructions")
-async def post_instructions(request: Request):
-    body = await request.json()
-    try:
-        INST_FILE.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
-        return {"ok": True}
-    except OSError as e:
-        return JSONResponse({"error": str(e)}, status_code=HttpStatus.INTERNAL_SERVER_ERROR)
-
-
+# ─── API: 지침 초안 생성 ────────────────────────────────────────────────────────
+# 2026-08-12: 지침 자체는 더 이상 전역이 아니다 — /api/projects/{id} PATCH의
+# instructions 필드로 프로젝트별 저장(backend/projects.py 참고, data/instructions.json
+# 은 마이그레이션 원본으로만 한 번 쓰이고 이후 무시됨). 초안 생성(로그 마이닝)만
+# 프로젝트에 묶이지 않는 전역 기능이라 그대로 둔다.
+#
 # 실제 질문/답변 로그에서 terms·examples 후보를 뽑아 초안으로 반환한다(저장은 안 함 —
 # 프론트가 InstructionsModal에 미리 채워 보여주고 사람이 검토 후 /api/instructions로
 # 저장). joins는 항상 빈 배열 — backend/instructions_draft.py 모듈 docstring 참고.

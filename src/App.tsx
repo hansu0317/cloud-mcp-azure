@@ -3,10 +3,9 @@ import Header             from './components/Header'
 import Sidebar            from './components/Sidebar'
 import NotebookView       from './components/NotebookView'
 import InstructionsModal  from './components/InstructionsModal'
-import { API, TOAST_DURATION_MS } from './constants'
+import { TOAST_DURATION_MS } from './constants'
 import {
   listProjects, createProject, getProject, updateProject, deleteProject as apiDeleteProject,
-  saveInstructions,
 } from './api'
 import type { Instructions, NotebookHandle, ProjectSummary, ProjectDetail, Cell } from './types'
 import './App.css'
@@ -16,10 +15,12 @@ import './App.css'
 // 가리키는 프로젝트가 삭제됐어도 목록의 최신 프로젝트로 대체될 뿐 데이터 유실은 없다.
 const LAST_ACTIVE_KEY = 'crm-ai-chat:lastActiveProjectId'
 
+// 프로젝트 응답에 instructions가 없는(마이그레이션 전 캐시 등) 경우를 대비한 안전값.
+const EMPTY_INSTRUCTIONS: Instructions = { joins: [], terms: [], examples: [] }
+
 export default function App() {
   const [projectList,   setProjectList]   = useState<ProjectSummary[]>([])
   const [activeProject, setActiveProject] = useState<ProjectDetail | null>(null)
-  const [instructions,  setInstructions]  = useState<Instructions>({ joins: [], terms: [], examples: [] })
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [showInstructions, setShowInstructions] = useState(false)
   const [toast,         setToast]         = useState<string | null>(null)
@@ -32,13 +33,6 @@ export default function App() {
     if (toastTimer.current) clearTimeout(toastTimer.current)
     setToast(msg)
     toastTimer.current = setTimeout(() => setToast(null), ms)
-  }, [])
-
-  useEffect(() => {
-    fetch(API.INSTRUCTIONS)
-      .then(r => r.json())
-      .then((d: Instructions) => setInstructions(d))
-      .catch(() => {})
   }, [])
 
   const refreshProjectList = useCallback(() => {
@@ -130,13 +124,15 @@ export default function App() {
     setSidebarCollapsed(false)
   }, [])
 
-  // 저장 성공 시 App 상태도 갱신 — NotebookView가 prop으로 받는 instructions가
-  // 즉시 최신화되어 다음 질문부터 바로 반영된다(재접속 불필요).
+  // 2026-08-12: 지침은 프로젝트별로 분리됐다(activeProject.instructions) — 저장도
+  // updateProject로 그 프로젝트의 필드만 바꾼다. 저장 성공 시 App 상태도 즉시
+  // 갱신해 NotebookView가 다음 질문부터 바로 새 지침을 반영한다(재접속 불필요).
   const handleSaveInstructions = useCallback(async (next: Instructions) => {
-    await saveInstructions(next)
-    setInstructions(next)
+    if (!activeProject) return
+    await updateProject(activeProject.id, { instructions: next })
+    setActiveProject(prev => (prev ? { ...prev, instructions: next } : prev))
     showToast('지침이 저장됐습니다')
-  }, [showToast])
+  }, [activeProject, showToast])
 
   return (
     <div className="app">
@@ -163,7 +159,7 @@ export default function App() {
             key={activeProject.id}
             ref={notebookRef}
             sessionId={activeProject.id}
-            instructions={instructions}
+            instructions={activeProject.instructions ?? EMPTY_INSTRUCTIONS}
             tables={activeProject.tables}
             initialCells={activeProject.cells}
             onCellsChange={handleCellsChange}
@@ -174,9 +170,10 @@ export default function App() {
 
       {toast && <div className="toast">{toast}</div>}
 
-      {showInstructions && (
+      {showInstructions && activeProject && (
         <InstructionsModal
-          instructions={instructions}
+          projectName={activeProject.name}
+          instructions={activeProject.instructions ?? EMPTY_INSTRUCTIONS}
           onSave={handleSaveInstructions}
           onClose={() => setShowInstructions(false)}
         />

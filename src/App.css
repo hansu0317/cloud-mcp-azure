@@ -132,6 +132,16 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 .instr-add-col-btn { align-self: flex-end; }
 .instr-total-count { flex-shrink: 0; font-size: 10.5px; color: #64748b; white-space: nowrap; }
 
+/* 2026-08-12: 비개발자용 개선 — 제목 옆 도움말 아이콘 (crm-ai-chat-local-llm과 통일) */
+.instr-title-help {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; margin-left: 6px; border-radius: 50%;
+  font-size: 10px; font-style: normal; color: #64748b; background: #1e2533;
+  cursor: help; vertical-align: middle;
+}
+.instr-title-help:hover { color: #a5b4fc; background: #232c42; }
+.instr-hint b { color: #94a3b8; font-weight: 600; }
+
 .instr-hdr-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .instr-row-draft { background: #171310; border: 1px dashed #4a3a12; }
 .instr-row-draft:hover { background: #201a12; }

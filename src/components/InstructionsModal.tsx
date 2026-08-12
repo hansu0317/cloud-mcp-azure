@@ -5,6 +5,7 @@ import { API } from '../constants'
 import type { Instructions, JoinDef, TermDef, ExampleDef } from '../types'
 
 interface Props {
+  projectName:  string
   instructions: Instructions
   onSave:       (next: Instructions) => Promise<void>
   onClose:      () => void
@@ -18,6 +19,15 @@ interface ColumnInfo { name: string; type: string; desc: string; options?: strin
 const EMPTY_JOIN:    JoinDef    = { fromTable: '', fromCol: '', toTable: '', toCol: '', label: '' }
 const EMPTY_TERM:    TermDef    = { table: '', column: '', term: '', def: '' }
 const EMPTY_EXAMPLE: ExampleDef = { question: '', answer: '' }
+
+// 질문 예시 탭의 유일한 "직접 입력" 부담을 줄이는 출발점 — 클릭하면 아래 입력칸에
+// 그대로 채워지고, 필요한 부분만 고쳐서 쓰면 된다(빈 화면에서 시작하지 않아도 됨).
+const EXAMPLE_TEMPLATES: { label: string; ex: ExampleDef }[] = [
+  { label: '순위 조회',   ex: { question: '이번 분기 매출 상위 5개 거래처는?',        answer: '거래처 테이블에서 매출액 기준으로 내림차순 정렬해 상위 5개를 표로 보여준다(거래처명·매출액 순).' } },
+  { label: '조건 필터링', ex: { question: '활성 상태인 거래처만 보여줘',              answer: '거래처 테이블에서 상태가 활성인 것만 조회해 표로 보여준다.' } },
+  { label: '기간 조회',   ex: { question: '이번 달에 새로 등록된 영업기회 보여줘',      answer: '영업기회 테이블에서 등록일이 이번 달인 것만 조회해 표로 보여준다.' } },
+  { label: '개수/합계',   ex: { question: '진행중인 영업기회가 총 몇 건이야?',         answer: '영업기회 테이블에서 상태가 진행중인 건의 개수를 세어 알려준다.' } },
+]
 
 // backend/dataverse.py의 fetchEntitySchema()가 만드는 마크다운 표
 // ("| 컬럼명 | 타입 | 한국어 설명 |" 헤더 + 구분선 + 데이터 행)를 그대로 파싱한다.
@@ -74,7 +84,7 @@ function ColumnSelect({ value, columns, loading, onChange }: {
 // 조인·용어 탭은 테이블/컬럼의 정확한 논리명(new_q3, customerid 같은)을 몰라도 되도록
 // ①②③… 순서로 드롭다운을 채워나가는 방식이다 — 카탈로그(GET /api/tables)와 컬럼
 // 설명(GET /api/describe)을 그대로 재사용해 새 서버 코드 없이 프론트에서만 구현했다.
-export default function InstructionsModal({ instructions, onSave, onClose }: Props) {
+export default function InstructionsModal({ projectName, instructions, onSave, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('joins')
   const [joins,    setJoins]    = useState<JoinDef[]>(instructions.joins)
   const [terms,    setTerms]    = useState<TermDef[]>(instructions.terms)
@@ -186,8 +196,11 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
       <div className="ts-modal-inner instr-modal-inner">
         <div className="ts-modal-hdr">
           <div>
-            <div className="ts-modal-title">지침 설정</div>
-            <div className="ts-modal-sub">조인 관계·용어·예시를 알려주면 질문마다 자동으로 참고해 답변 품질이 좋아집니다</div>
+            <div className="ts-modal-title">
+              "{projectName}"의 지침
+              <span className="instr-title-help" title="지침은 AI를 다시 학습시키는 게 아닙니다. 이 프로젝트에서 질문할 때마다 '우리는 이런 규칙을 씁니다'라는 메모를 자동으로 같이 보여주는 기능이에요. 다른 프로젝트에는 영향을 주지 않습니다. 아래 내용은 대부분 목록에서 고르기만 하면 됩니다.">ⓘ</span>
+            </div>
+            <div className="ts-modal-sub">테이블 연결·용어·예시를 알려주면 이 프로젝트의 질문마다 자동으로 참고해 답변 품질이 좋아집니다</div>
           </div>
           <div className="instr-hdr-actions">
             <button
@@ -206,10 +219,10 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
 
         <div className="instr-tabs">
           <button className={`instr-tab${tab === 'joins' ? ' active' : ''}`} onClick={() => setTab('joins')}>
-            🔗 조인 관계{joins.length > 0 && <span className="instr-tab-count">{joins.length}</span>}
+            🔗 테이블 연결{joins.length > 0 && <span className="instr-tab-count">{joins.length}</span>}
           </button>
           <button className={`instr-tab${tab === 'terms' ? ' active' : ''}`} onClick={() => setTab('terms')}>
-            📖 용어 정의{terms.length > 0 && <span className="instr-tab-count">{terms.length}</span>}
+            📖 용어 뜻{terms.length > 0 && <span className="instr-tab-count">{terms.length}</span>}
           </button>
           <button className={`instr-tab${tab === 'examples' ? ' active' : ''}`} onClick={() => setTab('examples')}>
             💬 질문 예시{examples.length > 0 && <span className="instr-tab-count">{examples.length}</span>}
@@ -219,9 +232,12 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
         <div className="ts-modal-body instr-modal-body">
           {tab === 'joins' && (
             <>
-              <div className="instr-hint">두 테이블이 어떤 컬럼으로 이어지는지, 이름을 몰라도 아래에서 순서대로 골라주세요.</div>
-              <div className="instr-hint instr-hint-todo">✨ 초안 생성은 아직 조인 관계를 채워주지 않습니다 — Lookup 컬럼이 실제로 어느 테이블을 가리키는지 Dataverse에서 별도로 조회해야 해서 다음 작업으로 미뤄뒀습니다. 지금은 아래에서 직접 골라주세요.</div>
-              {joins.length === 0 && <div className="sb-empty">등록된 조인 관계가 없습니다</div>}
+              <div className="instr-hint">
+                <b>언제 필요한가요?</b> "영업기회랑 거래처를 같이 보여줘"처럼 <b>테이블 두 개를 엮는 질문</b>에서 AI가 자꾸 틀린다면,
+                어떤 테이블의 어떤 컬럼끼리 연결되는지 알려주세요. 전부 목록에서 고르기만 하면 됩니다.
+              </div>
+              <div className="instr-hint instr-hint-todo">✨ 초안 생성은 아직 테이블 연결을 채워주지 않습니다 — Lookup 컬럼이 실제로 어느 테이블을 가리키는지 Dataverse에서 별도로 조회해야 해서 다음 작업으로 미뤄뒀습니다. 지금은 아래에서 직접 골라주세요.</div>
+              {joins.length === 0 && <div className="sb-empty">등록된 테이블 연결이 없습니다</div>}
               {joins.map((j, i) => (
                 <div className="instr-row" key={i}>
                   <span className="instr-row-text">
@@ -313,7 +329,10 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
 
           {tab === 'terms' && (
             <>
-              <div className="instr-hint">컬럼 값이나 코드가 업무에서 실제로 뭐라고 불리는지, 아래에서 순서대로 골라 알려주세요.</div>
+              <div className="instr-hint">
+                <b>언제 필요한가요?</b> 컬럼에 저장된 <b>숫자 코드나 값이 실제로 무슨 뜻인지</b> AI가 모를 때 알려주세요.
+                선택지(Picklist)가 있는 컬럼은 클릭 한 번으로 끝나고, 그 외에는 짧은 설명만 적으면 됩니다.
+              </div>
               {terms.length === 0 && <div className="sb-empty">등록된 용어가 없습니다</div>}
               {terms.map((t, i) => {
                 const incomplete = !t.table.trim() || !t.column.trim() || !t.def.trim()
@@ -366,7 +385,7 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
                       {termColumnOptions && (
                         <>
                           <div className="instr-hint" style={{ padding: '0 0 6px' }}>
-                            {columnDesc(termDraft.table, termDraft.column)}에 등록된 선택값입니다 — 클릭하면 바로 채워집니다
+                            {columnDesc(termDraft.table, termDraft.column)}에 등록된 선택값입니다 — <b>클릭 한 번이면 타이핑 없이 바로 추가됩니다</b>
                           </div>
                           <div className="instr-chip-row">
                             {termColumnOptions.map(opt => (
@@ -374,7 +393,7 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
                                 type="button"
                                 key={opt}
                                 className={`instr-chip${termDraft.term === opt ? ' active' : ''}`}
-                                onClick={() => setTermDraft(d => ({ ...d, term: opt }))}
+                                onClick={() => setTermDraft(d => ({ ...d, term: opt, def: opt }))}
                               >
                                 {opt}
                               </button>
@@ -396,7 +415,9 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
                   <div className="instr-step">
                     <span className="instr-step-num">4</span>
                     <div className="instr-step-body">
-                      <label className="instr-step-q">그게 정확히 어떤 뜻인가요?</label>
+                      <label className="instr-step-q">
+                        {termColumnOptions ? '설명을 그대로 쓰거나, 더 자세히 고쳐도 됩니다' : '그게 정확히 어떤 뜻인가요?'}
+                      </label>
                       <input
                         className="proj-new-input instr-select"
                         placeholder="예: 값이 1이면 진행중 상태"
@@ -414,7 +435,23 @@ export default function InstructionsModal({ instructions, onSave, onClose }: Pro
 
           {tab === 'examples' && (
             <>
-              <div className="instr-hint">자주 묻는 질문과 원하는 답변 형태를 예시로 보여주면 비슷한 질문에 더 잘 답합니다. 뭘 써야 할지 모르겠으면 위의 "✨ 초안 생성"부터 눌러보세요.</div>
+              <div className="instr-hint">
+                <b>언제 필요한가요?</b> 같은 유형의 질문에 AI가 매번 다르게 답하거나 자꾸 헤맬 때, "이런 질문엔 이렇게 답해줘"라는
+                대표 예시를 하나 등록해두세요. 위의 "✨ 초안 생성"이 실제 로그에서 후보를 찾아주거나, 아래 템플릿으로 바로 시작할 수도 있습니다.
+              </div>
+              <div className="instr-chip-row" style={{ padding: '0 10px 10px' }}>
+                {EXAMPLE_TEMPLATES.map(t => (
+                  <button
+                    type="button"
+                    key={t.label}
+                    className="instr-chip"
+                    onClick={() => setExampleDraft(t.ex)}
+                    title="누르면 아래 입력칸에 그대로 채워집니다 — 단어만 바꿔서 쓰세요"
+                  >
+                    ✨ {t.label}
+                  </button>
+                ))}
+              </div>
               {examples.length === 0 && <div className="sb-empty">등록된 예시가 없습니다</div>}
               {examples.map((ex, i) => (
                 <div className="instr-row instr-row-example" key={i}>

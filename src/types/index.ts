@@ -76,13 +76,17 @@ export interface Cell {
 }
 
 // /api/projects/:id 응답 — 서버는 cells를 unknown[]로 다루지만 프론트에서는 Cell[]로 좁혀 쓴다.
+// instructions는 2026-08-12부터 프로젝트별로 분리됨(이전엔 전역 /api/instructions
+// 하나를 모든 프로젝트가 공유 — 관계없는 프로젝트의 few-shot이 매 질문에 섞여
+// 들어가는 문제가 있었음). 오래된 캐시/서버 응답 호환을 위해 optional로 둔다.
 export interface ProjectDetail {
-  id:        string
-  name:      string
-  tables:    string[]
-  cells:     Cell[]
-  createdAt: string
-  updatedAt: string
+  id:            string
+  name:          string
+  tables:        string[]
+  instructions?: Instructions
+  cells:         Cell[]
+  createdAt:     string
+  updatedAt:     string
 }
 
 export interface QueryLog {

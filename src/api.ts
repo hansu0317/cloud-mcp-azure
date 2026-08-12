@@ -90,7 +90,7 @@ export async function getProject(id: string): Promise<ProjectDetail | null> {
 
 export async function updateProject(
   id: string,
-  patch: { name?: string; tables?: string[]; cells?: unknown[] },
+  patch: { name?: string; tables?: string[]; instructions?: Instructions; cells?: unknown[] },
 ): Promise<void> {
   await fetch(`${API.PROJECTS}/${id}`, {
     method:  'PATCH',
@@ -103,14 +103,10 @@ export async function deleteProject(id: string): Promise<void> {
   await fetch(`${API.PROJECTS}/${id}`, { method: 'DELETE' })
 }
 
-// ─── 지침 (조인 관계·용어·예시) — InstructionsModal이 씀 ────────────────────
-export async function saveInstructions(instructions: Instructions): Promise<void> {
-  await fetch(API.INSTRUCTIONS, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify(instructions),
-  })
-}
+// ─── 지침 (조인 관계·용어·예시) — 2026-08-12부터 프로젝트별로 분리, updateProject로 저장 ──
+// (예전엔 전역 POST /api/instructions 하나였음 — 프로젝트마다 다른 few-shot이 서로
+// 섞여 들어가는 문제가 있어 폐기. InstructionsModal은 이제 activeProject.instructions를
+// 받아 updateProject(id, { instructions })로 저장한다 — App.tsx의 handleSaveInstructions 참고.)
 
 // 실제 질문/답변 로그에서 뽑은 terms·examples 후보를 가져온다(저장은 안 됨 — 모달에
 // 미리 채워 보여주고 사람이 검토 후 저장). joins는 서버가 항상 빈 배열로 준다.

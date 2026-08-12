@@ -3,8 +3,7 @@ export const CONN_NAME = import.meta.env.VITE_CONN_NAME ?? 'Cloud'
 
 export const API = {
   CHAT:               '/api/chat',
-  INSTRUCTIONS:       '/api/instructions',
-  INSTRUCTIONS_DRAFT: '/api/instructions/draft',
+  INSTRUCTIONS_DRAFT: '/api/instructions/draft',   // 지침 저장/조회는 PROJECTS(프로젝트별)로 이동, 초안 생성만 전역
   LOGS:               '/api/logs',
   DESCRIBE:           '/api/describe',
   TABLES:             '/api/tables',
