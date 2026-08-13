@@ -126,7 +126,7 @@ export default function App() {
 
   // 2026-08-12: 지침은 프로젝트별로 분리됐다(activeProject.instructions) — 저장도
   // updateProject로 그 프로젝트의 필드만 바꾼다. 저장 성공 시 App 상태도 즉시
-  // 갱신해 NotebookView가 다음 질문부터 바로 새 지침을 반영한다(재접속 불필요).
+  // 갱신한다. 서버가 매 질문마다 저장된 최신 지침을 직접 읽으므로 재접속은 필요 없다.
   const handleSaveInstructions = useCallback(async (next: Instructions) => {
     if (!activeProject) return
     await updateProject(activeProject.id, { instructions: next })
@@ -159,8 +159,6 @@ export default function App() {
             key={activeProject.id}
             ref={notebookRef}
             sessionId={activeProject.id}
-            instructions={activeProject.instructions ?? EMPTY_INSTRUCTIONS}
-            tables={activeProject.tables}
             initialCells={activeProject.cells}
             onCellsChange={handleCellsChange}
             showToast={showToast}

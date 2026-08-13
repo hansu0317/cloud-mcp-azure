@@ -18,6 +18,9 @@ CLAUDE.md
 *.pdf
 docs/
 
+# 문서 작성 참고 이미지 (로컬 전용)
+defineview/
+
 # MCP 설정 (OAuth clientId 포함)
 .mcp.json
 

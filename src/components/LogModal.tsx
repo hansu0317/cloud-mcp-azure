@@ -7,13 +7,13 @@ type FilterKey = 'all' | 'chat' | 'tool' | 'error'
 
 const FILTERS: Record<FilterKey, (e: LogEntry) => boolean> = {
   all:   () => true,
-  chat:  (e) => ['CHAT', 'CLAUDE'].includes(e.category),
-  tool:  (e) => e.level === 'tool' || e.category === 'SECURITY',
+  chat:  (e) => ['API-질문', 'API-답변', 'API-세션'].includes(e.category),
+  tool:  (e) => ['API-쿼리', 'API-컴팩션', 'SCHEMA', 'SECURITY'].includes(e.category),
   error: (e) => e.level === 'error',
 }
 
 const FILTER_LABELS: Record<FilterKey, string> = {
-  all: '전체', chat: '채팅', tool: 'MCP', error: '오류',
+  all: '전체', chat: '채팅', tool: '도구/스키마', error: '오류',
 }
 
 export default function LogModal({ onClose }: { onClose: () => void }) {

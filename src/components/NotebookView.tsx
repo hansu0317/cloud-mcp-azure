@@ -1,20 +1,18 @@
 import { forwardRef, useImperativeHandle, useState, useCallback, useRef, useEffect } from 'react'
 import NotebookCell from './NotebookCell'
-import { streamChat, buildMessage } from '../api'
+import { streamChat } from '../api'
 import { APP_NAME, CELLS_AUTOSAVE_DEBOUNCE_MS } from '../constants'
-import type { Instructions, Cell, NotebookHandle, QueryLog } from '../types'
+import type { Cell, NotebookHandle, QueryLog } from '../types'
 
 interface Props {
   sessionId:      string
-  instructions:   Instructions
-  tables:         string[]                    // 프로젝트 테이블 스코프 — 빈 배열이면 전체 테이블
   initialCells?:  Cell[]                      // 프로젝트 전환 시 저장된 셀 복원
   onCellsChange?: (cells: Cell[]) => void      // 자동저장(디바운스)용
   showToast:      (msg: string) => void
 }
 
 const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
-  { sessionId, instructions, tables, initialCells, onCellsChange, showToast },
+  { sessionId, initialCells, onCellsChange, showToast },
   ref
 ) {
   const [cells, setCells] = useState<Cell[]>(() => initialCells ?? [])
@@ -66,14 +64,13 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
 
     try {
       await streamChat({
-        message:  buildMessage(cell.text, sessionId, instructions),
+        message:  cell.text,
         sessionId,
-        tables,
         onText: (text) => {
           acc.current += text
           const snapshot = acc.current
           setCells(prev => prev.map(c => c.id === id
-            ? { ...c, output: { ...c.output!, loading: false, content: snapshot } }
+            ? { ...c, output: { ...c.output!, content: snapshot } }
             : c
           ))
         },
@@ -114,7 +111,7 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
         : c
       ))
     }
-  }, [sessionId, instructions, tables])
+  }, [sessionId])
 
   const runAll = useCallback(async () => {
     for (const cell of cellsRef.current) {

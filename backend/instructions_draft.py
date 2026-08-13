@@ -1,4 +1,4 @@
-"""instructions.json 초안 자동 생성 — logs/app.log의 실제 사용 이력에서 후보를 뽑는다.
+"""프로필 서버 로그의 실제 사용 이력에서 지침 초안 후보를 뽑는다.
 
 GET /api/instructions/draft (backend/main.py)가 이 모듈을 호출한다. 사람이 매번 빈
 화면에서부터 조인/용어/예시를 타이핑하는 대신, 이미 실제로 오간 질문·답변에서
@@ -17,15 +17,14 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from pathlib import Path
 from typing import Any
 
-LOG_FILE = Path.cwd() / "logs" / "app.log"
+from .logger import read_json_log_tail
+
 MAX_LOG_ENTRIES = 500   # 오래된 로그까지 전부 훑을 필요는 없음 — 최근 이력이면 충분
 
 # 답변 로그 끝에 붙는 "(9.2초, 쿼리 2회, 토큰 in:11293 out:320 …)" 통계 접미사 제거용
 _STATS_SUFFIX_RE = re.compile(r"\s*\([\d.]+초,\s*쿼리\s*\d+회.*?\)\s*$")
-_QUERY_COUNT_RE = re.compile(r"쿼리\s*(\d+)회")
 
 # 조사·어미 등 아주 단순한 접미사만 제거하는 가벼운 휴리스틱(형태소 분석기 없음) —
 # 완벽한 어간 추출이 아니라 "그럴듯한 후보"를 뽑는 용도라 사람의 최종 검토를 전제로 한다.
@@ -53,40 +52,93 @@ def _strip_suffix(token: str) -> str:
 
 
 def _read_log_entries() -> list[dict[str, Any]]:
-    try:
-        lines = LOG_FILE.read_text(encoding="utf-8").strip().split("\n")
-    except OSError:
-        return []
-    entries: list[dict[str, Any]] = []
-    for line in lines[-MAX_LOG_ENTRIES:]:
-        if not line:
-            continue
-        try:
-            entries.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return entries  # 파일 순서 그대로 = 시간순
+    # 대형 운영 로그 전체를 메모리에 올리지 않고 파일 끝의 필요한 줄만 읽는다.
+    return read_json_log_tail(MAX_LOG_ENTRIES)
+
+
+def _entry_data(entry: dict[str, Any]) -> dict[str, Any]:
+    data = entry.get("data")
+    return data if isinstance(data, dict) else {}
+
+
+def _correlation_key(entry: dict[str, Any]) -> tuple[str, str] | None:
+    data = _entry_data(entry)
+    request_id = data.get("requestId")
+    if isinstance(request_id, str) and request_id:
+        return ("request", request_id)
+    session_id = data.get("sessionId")
+    if isinstance(session_id, str) and session_id:
+        return ("session", session_id)
+    return None
 
 
 def _draft_examples(entries: list[dict[str, Any]], max_n: int = 8) -> list[dict[str, str]]:
-    """API-질문 다음에 나오는 API-답변 중, 실제로 쿼리를 1회 이상 성공시킨 쌍만 후보로 승격."""
+    """상관관계가 맞고 Dataverse query가 성공한 질문/답변만 후보로 승격한다.
+
+    새 로그의 ``requestId``/``sessionId``/``successfulDataverseQueries``를 우선
+    사용한다. 이전 로그는 질문과 답변 사이의 성공한 ``dataverse_query`` 기록으로
+    보수적으로 판정한다. 따라서 실패 쿼리와 describe-only 대화는 예시에 들어오지
+    않는다.
+    """
     examples: list[dict[str, str]] = []
     seen_questions: set[str] = set()
-    pending_question: str | None = None
+    pending: dict[tuple[str, str], dict[str, Any]] = {}
+    legacy_pending: list[dict[str, Any]] = []
 
     for entry in entries:
         category = entry.get("category")
         message = entry.get("message", "")
+        if not isinstance(message, str):
+            continue
+        key = _correlation_key(entry)
         if category == "API-질문":
-            pending_question = message
-        elif category == "API-답변" and pending_question:
-            m = _QUERY_COUNT_RE.search(message)
-            query_count = int(m.group(1)) if m else 0
-            if query_count >= 1 and pending_question not in seen_questions:
+            context = {"question": message, "successful": 0}
+            if key is not None:
+                pending[key] = context
+            else:
+                legacy_pending.append(context)
+            continue
+
+        context: dict[str, Any] | None = pending.get(key) if key is not None else None
+        if context is None and key is not None and key[0] == "request":
+            session_id = _entry_data(entry).get("sessionId")
+            if isinstance(session_id, str) and session_id:
+                context = pending.get(("session", session_id))
+        if context is None and key is None and legacy_pending:
+            context = legacy_pending[-1]
+
+        if category == "API-쿼리" and context is not None:
+            data = _entry_data(entry)
+            tool_name = data.get("tool") or data.get("toolName")
+            is_query = tool_name == "dataverse_query" or message.startswith("[dataverse_query]")
+            if is_query and data.get("error") is not True and data.get("success") is not False:
+                context["successful"] = int(context.get("successful") or 0) + 1
+            continue
+
+        if category == "API-오류" and context is not None:
+            if key is not None:
+                pending.pop(key, None)
+            elif context in legacy_pending:
+                legacy_pending.remove(context)
+            continue
+
+        if category == "API-답변" and context is not None:
+            data = _entry_data(entry)
+            structured_count = data.get("successfulDataverseQueries")
+            successful = (
+                structured_count
+                if isinstance(structured_count, int) and not isinstance(structured_count, bool)
+                else context.get("successful", 0)
+            )
+            question = str(context.get("question") or "")
+            if successful >= 1 and question and question not in seen_questions:
                 answer = _STATS_SUFFIX_RE.sub("", message).strip()
-                examples.append({"question": pending_question, "answer": answer})
-                seen_questions.add(pending_question)
-            pending_question = None
+                examples.append({"question": question, "answer": answer})
+                seen_questions.add(question)
+            if key is not None:
+                pending.pop(key, None)
+            elif context in legacy_pending:
+                legacy_pending.remove(context)
 
     return examples[-max_n:]  # 최신순으로 최대 max_n개
 

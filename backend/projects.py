@@ -1,6 +1,6 @@
 """프로젝트 영속화 — data/projects/<id>.json 파일 하나당 프로젝트 하나.
 
-server/projects.ts 포팅. "새 세션"(휘발성, 이름 없음)을 완전히 대체하는 개념이다.
+"새 세션"(휘발성, 이름 없음)을 완전히 대체하는 개념이다.
 프로젝트는
   - 이름
   - 테이블 스코프(tables — 빈 배열이면 "전체 테이블", 즉 스코프 제한 없음)
@@ -9,7 +9,7 @@ server/projects.ts 포팅. "새 세션"(휘발성, 이름 없음)을 완전히 �
     관계없는 프로젝트의 few-shot 예시·용어가 매 질문에 섞여 들어가 프롬프트만
     커지고 오히려 방해가 될 수 있어 테이블 스코프처럼 프로젝트 단위로 분리했다)
   - 노트북 셀(cells — 프론트 전용 구조, 서버는 내용을 해석하지 않고 그대로 보관)
-  - Claude 대화 히스토리(history — 프론트에는 절대 내려주지 않음, chat_api.py 전용)
+  - 공급자 중립 대화 히스토리(history — 프론트에는 절대 내려주지 않음, chat_api.py 전용)
 를 파일로 들고 있어 서버 재시작·새 브라우저 창에서도 사용자가 직접 삭제하기
 전까지 사라지지 않는다.
 
@@ -22,8 +22,10 @@ data/ 전체가 .gitignore 대상이라 별도 조치 없이 커밋에서 제외
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -45,6 +47,21 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="milliseconds")
 
 
+def _empty_instructions() -> dict[str, Any]:
+    """호출자 사이에 내부 list 객체가 공유되지 않는 빈 지침을 반환한다."""
+    return deepcopy(_EMPTY_INSTRUCTIONS)
+
+
+def _copy_instructions(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return _empty_instructions()
+    return {
+        "joins": deepcopy(value.get("joins")) if isinstance(value.get("joins"), list) else [],
+        "terms": deepcopy(value.get("terms")) if isinstance(value.get("terms"), list) else [],
+        "examples": deepcopy(value.get("examples")) if isinstance(value.get("examples"), list) else [],
+    }
+
+
 def _read_json_file(path: Path, fallback):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -53,28 +70,84 @@ def _read_json_file(path: Path, fallback):
 
 
 def _file_path(project_id: str) -> Path:
-    return PROJECTS_DIR / f"{project_id}.json"
+    """검증된 프로젝트 경로만 반환하고 심볼릭 링크 경로 탈출도 거부한다."""
+    if not isinstance(project_id, str) or not _ID_RE.fullmatch(project_id):
+        raise ValueError("유효하지 않은 프로젝트 ID입니다.")
+    root = PROJECTS_DIR.resolve()
+    expected = root / f"{project_id}.json"
+    path = (PROJECTS_DIR / f"{project_id}.json").resolve()
+    if path != expected:
+        raise ValueError("프로젝트 경로가 저장 디렉터리를 벗어났습니다.")
+    return path
+
+
+def _is_project_shape(value: Any, expected_id: str) -> bool:
+    """파일을 API 객체로 사용하기 전에 필수 루트 구조를 검증한다."""
+    if not isinstance(value, dict):
+        return False
+    if value.get("id") != expected_id or not isinstance(value.get("name"), str):
+        return False
+    if not isinstance(value.get("tables"), list) or not all(isinstance(item, str) for item in value["tables"]):
+        return False
+    if not isinstance(value.get("createdAt"), str) or not isinstance(value.get("updatedAt"), str):
+        return False
+    if "instructions" in value and not isinstance(value["instructions"], dict):
+        return False
+    if "cells" in value and not isinstance(value["cells"], list):
+        return False
+    if "history" in value and not isinstance(value["history"], list):
+        return False
+    return True
 
 
 def _read_project(project_id: str) -> dict[str, Any] | None:
-    if not _ID_RE.match(project_id):
+    if not isinstance(project_id, str) or not _ID_RE.fullmatch(project_id):
         return None
     try:
-        return json.loads(_file_path(project_id).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        value = json.loads(_file_path(project_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
         return None
+    if not _is_project_shape(value, project_id):
+        log.error("PROJECT", f"손상된 프로젝트 파일 무시: {project_id}.json")
+        return None
+    return deepcopy(value)
 
 
 def _write_project(p: dict[str, Any]) -> None:
-    _file_path(p["id"]).write_text(json.dumps(p, ensure_ascii=False, indent=2), encoding="utf-8")
+    project_id = p.get("id")
+    if not isinstance(project_id, str) or not _ID_RE.fullmatch(project_id):
+        raise ValueError("유효하지 않은 프로젝트 ID입니다.")
+    if not _is_project_shape(p, project_id):
+        raise ValueError("프로젝트 데이터 형식이 올바르지 않습니다.")
+
+    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+    target = _file_path(project_id)
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    if temporary.parent.resolve() != PROJECTS_DIR.resolve():
+        raise ValueError("임시 프로젝트 경로가 저장 디렉터리를 벗어났습니다.")
+
+    payload = json.dumps(p, ensure_ascii=False, indent=2)
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _to_summary(p: dict[str, Any]) -> dict[str, Any]:
-    return {"id": p["id"], "name": p["name"], "tables": p["tables"], "createdAt": p["createdAt"], "updatedAt": p["updatedAt"]}
+    return deepcopy(
+        {"id": p["id"], "name": p["name"], "tables": p["tables"], "createdAt": p["createdAt"], "updatedAt": p["updatedAt"]}
+    )
 
 
 def _to_detail(p: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in p.items() if k != "history"}
+    return deepcopy({k: v for k, v in p.items() if k != "history"})
 
 
 def list_projects() -> list[dict[str, Any]]:
@@ -99,8 +172,8 @@ def create_project(name: str, tables: list[str] | None = None) -> dict[str, Any]
     p = {
         "id": project_id,
         "name": name.strip() or "제목 없는 프로젝트",
-        "tables": tables or [],
-        "instructions": dict(_EMPTY_INSTRUCTIONS),   # 새 프로젝트는 항상 빈 지침에서 시작
+        "tables": deepcopy(tables) if tables else [],
+        "instructions": _empty_instructions(),   # 새 프로젝트는 항상 빈 지침에서 시작
         "cells": [],
         "history": [],
         "createdAt": now,
@@ -121,11 +194,11 @@ def update_project(
     if name is not None:
         p["name"] = name.strip() or p["name"]
     if tables is not None:
-        p["tables"] = tables
+        p["tables"] = deepcopy(tables)
     if instructions is not None:
-        p["instructions"] = instructions
+        p["instructions"] = _copy_instructions(instructions)
     if cells is not None:
-        p["cells"] = cells
+        p["cells"] = deepcopy(cells)
     p["updatedAt"] = _now_iso()
     _write_project(p)
     return _to_detail(p)
@@ -147,7 +220,7 @@ def _migrate_legacy_global_instructions() -> None:
         p = _read_project(pid)
         if p is None or "instructions" in p:
             continue
-        p["instructions"] = dict(legacy) if legacy else dict(_EMPTY_INSTRUCTIONS)
+        p["instructions"] = _copy_instructions(legacy)
         _write_project(p)
         migrated += 1
     if migrated:
@@ -158,34 +231,43 @@ _migrate_legacy_global_instructions()
 
 
 def delete_project(project_id: str) -> bool:
-    if not _ID_RE.match(project_id):
+    if not isinstance(project_id, str) or not _ID_RE.fullmatch(project_id):
         return False
     try:
         _file_path(project_id).unlink()
         log.info("PROJECT", f"삭제: {project_id}")
         return True
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 
 # ─── 채팅 히스토리(LLM 컨텍스트) — chat_api.py 전용, /api/projects 응답에는 절대 포함하지 않음 ──
 def get_project_history(project_id: str) -> list[Any]:
     p = _read_project(project_id)
-    return p["history"] if p else []
+    history = p.get("history") if p else None
+    return deepcopy(history) if isinstance(history, list) else []
 
 
 def get_project_tables(project_id: str) -> list[str]:
     p = _read_project(project_id)
-    return p["tables"] if p else []
+    tables = p.get("tables") if p else None
+    return list(tables) if isinstance(tables, list) else []
 
 
-def save_project_history(project_id: str, history: list[Any]) -> None:
+def get_project_instructions(project_id: str) -> dict[str, Any]:
+    p = _read_project(project_id)
+    return _copy_instructions(p.get("instructions") if p else None)
+
+
+def project_exists(project_id: str) -> bool:
+    return _read_project(project_id) is not None
+
+
+def save_project_history(project_id: str, history: list[Any]) -> bool:
     existing = _read_project(project_id)
-    now = _now_iso()
-    p = existing or {
-        "id": project_id, "name": "제목 없는 프로젝트", "tables": [], "cells": [], "history": [],
-        "createdAt": now, "updatedAt": now,
-    }
-    p["history"] = history
-    p["updatedAt"] = now
-    _write_project(p)
+    if existing is None:
+        return False
+    existing["history"] = deepcopy(history)
+    existing["updatedAt"] = _now_iso()
+    _write_project(existing)
+    return True

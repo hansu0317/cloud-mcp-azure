@@ -1,47 +1,20 @@
 import { marked }     from 'marked'
 import DOMPurify      from 'dompurify'
 import { API } from './constants'
-import type { Instructions, StreamChatOptions, ProjectDetail, SseEvent, ProjectSummary } from './types'
+import type { Instructions, StreamChatOptions, ProjectDetail, ProjectSummary, SseEvent } from './types'
 
 export function renderMd(text: string): string {
   if (!text) return ''
   return DOMPurify.sanitize(marked.parse(text) as string)
 }
 
-// 세션별 instructions 전송 여부 추적 — 첫 메시지에만 지침 첨부 (스키마는 서버에서 주입)
-const contextSentSessions = new Set<string>()
-
-export function buildMessage(question: string, sessionId: string, instructions: Partial<Instructions> = {}): string {
-  if (contextSentSessions.has(sessionId)) return question
-  contextSentSessions.add(sessionId)
-
-  const parts: string[] = []
-
-  if (instructions.joins?.length)
-    parts.push(`[테이블 관계: ${instructions.joins.map(j =>
-      `${j.fromTable}.${j.fromCol}=${j.toTable}.${j.toCol}${j.label ? `(${j.label})` : ''}`
-    ).join(', ')}]`)
-
-  if (instructions.terms?.length)
-    parts.push(`[컬럼 용어: ${instructions.terms.map(t =>
-      `${t.table}.${t.column}="${t.term}":${t.def}`
-    ).join(' / ')}]`)
-
-  if (instructions.examples?.length)
-    parts.push(`[참고 예시]\n${instructions.examples.map(e =>
-      `Q: ${e.question}\nA: ${e.answer}`
-    ).join('\n\n')}`)
-
-  return parts.length ? `${parts.join('\n')}\n\n${question}` : question
-}
-
 export async function streamChat(opts: StreamChatOptions): Promise<void> {
-  const { message, sessionId, tables, onText, onTool, onQuery, onDone, onError } = opts
+  const { message, sessionId, onText, onTool, onQuery, onDone, onError } = opts
 
   const resp = await fetch(API.CHAT, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ message, sessionId, tables }),
+    body:    JSON.stringify({ message, sessionId }),
   })
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
 

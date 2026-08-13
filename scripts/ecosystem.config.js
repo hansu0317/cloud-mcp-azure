@@ -1,34 +1,41 @@
-module.exports = {
-  apps: [{
-    name:        'crm-ai-chat',
-    // backend/main.py는 패키지 내부 상대 임포트(from .chat_api import ...)를 쓰므로
-    // `python backend/main.py`로 직접 실행하면 안 되고 `python -m backend.main`이어야
-    // 한다. interpreter를 'none'으로 두고 script 자리에 파이썬 실행 파일 자체를 지정해
-    // pm2가 그대로 `<script> <args>` = `python -m backend.main`을 실행하게 한다.
-    script:      '.venv/bin/python',   // venv 없으면 'python3'/'python'으로 교체
-    interpreter: 'none',
-    args:        '-m backend.main',
-    instances: 1,        // 세션 히스토리가 인메모리라 단일 인스턴스
-    autorestart: true,
-    watch:   false,
-    max_memory_restart: '500M',
+const fs = require('fs')
+const path = require('path')
 
-    env_production: {
-      NODE_ENV: 'production',
-      PORT:     3000,
-    },
+const appDir = path.resolve(__dirname, '..')
+const envFile = path.join(appDir, '.env')
+const fileEnv = {}
+if (fs.existsSync(envFile)) {
+  for (const line of fs.readFileSync(envFile, 'utf8').split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/)
+    if (!match) continue
+    fileEnv[match[1]] = match[2].trim().replace(/^(['"])(.*)\1$/, '$2').replace(/\s+#.*$/, '')
+  }
+}
 
-    // PM2 자체 로그 (app.log/error.log 와 별개)
-    error_file:      'logs/pm2-error.log',
-    out_file:        'logs/pm2-out.log',
-    merge_logs:      true,
-    log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
-  }],
-};
+const provider = (process.env.LLM_PROVIDER || fileEnv.LLM_PROVIDER || 'anthropic').toLowerCase()
+if (!['anthropic', 'ollama'].includes(provider)) throw new Error('LLM_PROVIDER must be anthropic or ollama.')
+const profile = provider === 'anthropic' ? 'cloud' : 'local'
+const python = process.platform === 'win32'
+  ? path.join(appDir, '.venv', 'Scripts', 'python.exe')
+  : path.join(appDir, '.venv', 'bin', 'python')
+const pythonBin = fs.existsSync(python) ? python : (process.platform === 'win32' ? 'python' : 'python3')
+const nullDevice = process.platform === 'win32' ? 'NUL' : '/dev/null'
 
-// 사용법:
-//   pm2 start ecosystem.config.js --env production
-//   pm2 save        ← 재부팅 후 자동 시작 등록
-//   pm2 startup     ← 시스템 서비스 등록 (안내 명령어 출력)
-//   pm2 logs crm-ai-chat
-//   pm2 restart crm-ai-chat
+module.exports = { apps: [{
+  name: `crm-ai-chat-${profile}`,
+  cwd: appDir,
+  script: pythonBin,
+  interpreter: 'none',
+  args: '-m backend.main',
+  instances: 1,
+  autorestart: true,
+  watch: false,
+  max_memory_restart: '500M',
+  env: { LLM_PROVIDER: provider },
+  env_production: { LLM_PROVIDER: provider },
+  // 앱 자체 JSONL logger만 server.<profile>.log에 기록한다. PM2 console 파일은 만들지 않는다.
+  error_file: nullDevice,
+  out_file: nullDevice,
+  merge_logs: true,
+  log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+}] }

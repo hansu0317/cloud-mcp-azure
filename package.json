@@ -1,15 +1,18 @@
 {
-  "name": "crm-chat",
+  "name": "crm-ai-chat",
   "version": "2.0.0",
-  "description": "Quali CRM AI Notebook — Claude API + Dataverse Web API (읽기 전용)",
+  "private": true,
+  "description": "Quali CRM AI Notebook — Python/FastAPI + Anthropic/Ollama provider profiles",
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
-    "dev:server": "python -m uvicorn backend.main:app --reload --port 3000",
+    "dev:server": "python -m backend.dev",
     "dev:client": "vite",
     "build": "npm run build:client",
     "build:client": "vite build",
     "start": "python -m backend.main",
     "type-check": "tsc --noEmit",
+    "test": "python -m unittest discover -s tests_py -p \"test_*.py\" -v && python -m unittest discover -s tests_python -p \"test_*.py\" -v",
+    "test:e2e:safe": "python scripts/e2e_fastapi_safe.py",
     "preview": "vite preview"
   },
   "devDependencies": {

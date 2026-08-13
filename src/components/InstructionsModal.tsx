@@ -77,8 +77,8 @@ function ColumnSelect({ value, columns, loading, onChange }: {
   )
 }
 
-// "지침" 설정 팝업 — 테이블 조인 관계·컬럼 용어·질문 예시를 등록해두면 매 세션 첫
-// 메시지에 자동으로 붙어(src/api.ts의 buildMessage) 모델이 참고한다. TableScopeModal과
+// "지침" 설정 팝업 — 테이블 조인 관계·컬럼 용어·질문 예시를 등록하면 서버가 매 질문의
+// 시스템 프롬프트에 최신 저장값을 넣어 모델이 참고한다. TableScopeModal과
 // 같은 모달 셸(.ts-modal*)을 재사용해 기존 UI 톤을 그대로 유지한다.
 //
 // 조인·용어 탭은 테이블/컬럼의 정확한 논리명(new_q3, customerid 같은)을 몰라도 되도록

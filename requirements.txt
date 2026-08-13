@@ -1,6 +1,5 @@
-# Quali CRM Chat 백엔드 (Python) — 실행: pip install -r requirements.txt
+# Quali CRM Chat 백엔드 (Python >= 3.11) — 실행: pip install -r requirements.txt
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 httpx>=0.27.0
-anthropic>=0.70.0
 python-dotenv>=1.0.1

@@ -1,4 +1,4 @@
-"""SSE(Server-Sent Events) 헬퍼 + HTTP 상태 코드 상수. server/sse.ts 포팅.
+"""SSE(Server-Sent Events) 헬퍼 + HTTP 상태 코드 상수.
 
 15초 간격 하트비트(SSE 주석 라인)를 함께 보내 프록시(nginx 등)의 유휴 타임아웃으로
 스트림이 조용히 끊기는 것을 막는다 — 클라이언트 파서는 'data: ' 라인만 읽으므로 무해.

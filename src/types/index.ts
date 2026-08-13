@@ -1,59 +1,56 @@
-// 프론트엔드 타입 (구 shared/types.ts 인라인 — 백엔드가 Python으로 바뀌며
-// TS/Python 간 공유 타입 파일 대신 프론트 쪽에 독립적으로 정의한다.
-// 서버 응답 JSON 모양은 그대로이므로 여기 필드는 backend/*.py와 계속 맞춰 유지한다.)
-
-// SSE 스트리밍 이벤트 (서버 → 클라이언트)
+// FastAPI JSON 계약을 표현하는 프론트엔드 타입.
 export type SseEvent =
-  | { type: 'text';  text: string }
-  | { type: 'tool';  name: string }
+  | { type: 'text'; text: string }
+  | { type: 'tool'; name: string }
   | { type: 'query'; tool: string; input: Record<string, unknown> }
   | { type: 'error'; message: string }
   | { type: 'done' }
 
-// 지침 설정
 export interface JoinDef {
   fromTable: string
-  fromCol:   string
-  toTable:   string
-  toCol:     string
-  label?:    string
+  fromCol: string
+  toTable: string
+  toCol: string
+  label?: string
 }
 
 export interface TermDef {
-  table:  string
+  table: string
   column: string
-  term:   string
-  def:    string
+  term: string
+  def: string
 }
 
 export interface ExampleDef {
   question: string
-  answer:   string
+  answer: string
 }
 
 export interface Instructions {
-  joins:    JoinDef[]
-  terms:    TermDef[]
+  joins: JoinDef[]
+  terms: TermDef[]
   examples: ExampleDef[]
 }
 
-// 로그 엔트리
-export interface LogEntry {
-  time:      string
-  level:     'info' | 'warn' | 'error' | 'tool'
-  category:  string
-  message:   string
-  data?:     Record<string, unknown>
+export interface ChatRequest {
+  message: string
+  sessionId: string
 }
 
-// 프로젝트("새 세션"을 대체) — 이름 + 테이블 스코프 + 노트북 셀을 서버가 영속화한다.
-// cells는 프론트 전용 구조라 서버는 내용을 해석하지 않고 그대로 저장/반환만 한다.
+export interface LogEntry {
+  time: string
+  level: 'info' | 'warn' | 'error' | 'tool'
+  category: string
+  message: string
+  data?: Record<string, unknown>
+}
+
 export interface ProjectSummary {
-  id:         string
-  name:       string
-  tables:     string[]   // 이 프로젝트의 테이블 스코프 (빈 배열 = 전체 테이블)
-  createdAt:  string
-  updatedAt:  string
+  id: string
+  name: string
+  tables: string[]
+  createdAt: string
+  updatedAt: string
 }
 
 // 노트북 셀
@@ -95,10 +92,7 @@ export interface QueryLog {
 }
 
 // streamChat 옵션
-export interface StreamChatOptions {
-  message:   string
-  sessionId: string
-  tables?:   string[]   // 프로젝트 테이블 스코프 — 빈 배열/미지정이면 전체 테이블
+export interface StreamChatOptions extends ChatRequest {
 
   onText?:   (text: string) => void
   onTool?:   (name: string) => void

@@ -15,5 +15,5 @@
     "noUnusedParameters": false,
     "skipLibCheck": true
   },
-  "include": ["src", "shared"]
+  "include": ["src"]
 }
