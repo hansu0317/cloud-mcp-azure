@@ -6,3 +6,7 @@ python-dotenv>=1.0.1
 # backend/mcp_server.py — Claude Desktop/Code 등 MCP client용 stdio/streamable-http 서버.
 # 웹앱 FastAPI 프로세스(backend/main.py)는 기동 시 이 패키지를 쓰지 않는다.
 mcp>=2.0.0
+# scripts/setup_postgres_poc.py — 다른 DB 일반화 검증용 PostgreSQL 테스트 스키마
+# 준비 스크립트 전용. 웹앱·MCP 서버 어느 쪽도 아직 이 패키지를 쓰지 않는다
+# (DataSource 어댑터가 추가되면 그때 앱 의존성으로 승격).
+psycopg2-binary>=2.9.9
