@@ -1,48 +1,20 @@
 import { marked }     from 'marked'
 import DOMPurify      from 'dompurify'
 import { API } from './constants'
-import type { Instructions, StreamChatOptions, ProjectDetail } from './types'
-import type { SseEvent, ProjectSummary } from '../shared/types'
+import type { Instructions, StreamChatOptions, ProjectDetail, ProjectSummary, SseEvent } from './types'
 
 export function renderMd(text: string): string {
   if (!text) return ''
   return DOMPurify.sanitize(marked.parse(text) as string)
 }
 
-// 세션별 instructions 전송 여부 추적 — 첫 메시지에만 지침 첨부 (스키마는 서버에서 주입)
-const contextSentSessions = new Set<string>()
-
-export function buildMessage(question: string, sessionId: string, instructions: Partial<Instructions> = {}): string {
-  if (contextSentSessions.has(sessionId)) return question
-  contextSentSessions.add(sessionId)
-
-  const parts: string[] = []
-
-  if (instructions.joins?.length)
-    parts.push(`[테이블 관계: ${instructions.joins.map(j =>
-      `${j.fromTable}.${j.fromCol}=${j.toTable}.${j.toCol}${j.label ? `(${j.label})` : ''}`
-    ).join(', ')}]`)
-
-  if (instructions.terms?.length)
-    parts.push(`[컬럼 용어: ${instructions.terms.map(t =>
-      `${t.table}.${t.column}="${t.term}":${t.def}`
-    ).join(' / ')}]`)
-
-  if (instructions.examples?.length)
-    parts.push(`[참고 예시]\n${instructions.examples.map(e =>
-      `Q: ${e.question}\nA: ${e.answer}`
-    ).join('\n\n')}`)
-
-  return parts.length ? `${parts.join('\n')}\n\n${question}` : question
-}
-
 export async function streamChat(opts: StreamChatOptions): Promise<void> {
-  const { message, sessionId, tables, onText, onTool, onQuery, onDone, onError } = opts
+  const { message, sessionId, onText, onTool, onQuery, onDone, onError } = opts
 
   const resp = await fetch(API.CHAT, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ message, sessionId, tables }),
+    body:    JSON.stringify({ message, sessionId }),
   })
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
 
@@ -91,7 +63,7 @@ export async function getProject(id: string): Promise<ProjectDetail | null> {
 
 export async function updateProject(
   id: string,
-  patch: { name?: string; tables?: string[]; cells?: unknown[] },
+  patch: { name?: string; tables?: string[]; instructions?: Instructions; cells?: unknown[] },
 ): Promise<void> {
   await fetch(`${API.PROJECTS}/${id}`, {
     method:  'PATCH',
@@ -102,4 +74,15 @@ export async function updateProject(
 
 export async function deleteProject(id: string): Promise<void> {
   await fetch(`${API.PROJECTS}/${id}`, { method: 'DELETE' })
+}
+
+// ─── 지침 (조인 관계·용어·예시) — 2026-08-12부터 프로젝트별로 분리, updateProject로 저장 ──
+// (예전엔 전역 POST /api/instructions 하나였음 — 프로젝트마다 다른 few-shot이 서로
+// 섞여 들어가는 문제가 있어 폐기. InstructionsModal은 이제 activeProject.instructions를
+// 받아 updateProject(id, { instructions })로 저장한다 — App.tsx의 handleSaveInstructions 참고.)
+
+// 실제 질문/답변 로그에서 뽑은 terms·examples 후보를 가져온다(저장은 안 됨 — 모달에
+// 미리 채워 보여주고 사람이 검토 후 저장). joins는 서버가 항상 빈 배열로 준다.
+export async function getInstructionsDraft(): Promise<Instructions> {
+  return fetch(API.INSTRUCTIONS_DRAFT).then(r => r.json()) as Promise<Instructions>
 }

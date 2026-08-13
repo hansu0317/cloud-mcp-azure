@@ -1,11 +1,5 @@
-# CRM Chat 서버 관리 스크립트 (Windows / PowerShell 버전)
-# scripts/server.sh(Linux)와 동일한 역할 - start/stop/restart/status
-#
-# 사용법:
-#   powershell -ExecutionPolicy Bypass -File scripts\server.ps1 start
-#   powershell -ExecutionPolicy Bypass -File scripts\server.ps1 stop
-#   powershell -ExecutionPolicy Bypass -File scripts\server.ps1 status
-#   powershell -ExecutionPolicy Bypass -File scripts\server.ps1 restart
+# Quali CRM AI Notebook FastAPI server management (Windows)
+# Usage: powershell -ExecutionPolicy Bypass -File scripts\server.ps1 start|stop|restart|status|logs
 
 param(
     [Parameter(Mandatory = $true, Position = 0)]
@@ -14,144 +8,183 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-
-# 콘솔 코드페이지가 UTF-8(65001)이 아니면 한글 로그가 깨져 보인다 (CP949로 잘못 해석됨).
-# app.log 자체는 항상 정상 UTF-8이므로, 표시 쪽만 맞춰준다.
 try {
     if ((chcp) -notmatch '65001') { chcp 65001 | Out-Null }
     [Console]::OutputEncoding = [Text.Encoding]::UTF8
-} catch {
-    # 콘솔이 없는 호스트(예: 스케줄러) 등에서는 무시
+} catch {}
+
+$AppDir = Split-Path -Parent $PSScriptRoot
+$EnvFile = Join-Path $AppDir '.env'
+$PidFile = Join-Path $AppDir '.server.pid'
+$LogDir = Join-Path $AppDir 'logs'
+
+function Get-DotEnvValue {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    if (-not (Test-Path -LiteralPath $EnvFile)) { return $null }
+    foreach ($line in Get-Content -LiteralPath $EnvFile -ErrorAction Stop) {
+        if ($line -notmatch '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') { continue }
+        if ($Matches[1] -ne $Name) { continue }
+        $value = $Matches[2].Trim()
+        if ($value.Length -ge 2) {
+            $first = $value.Substring(0, 1); $last = $value.Substring($value.Length - 1, 1)
+            if (($first -eq '"' -and $last -eq '"') -or ($first -eq "'" -and $last -eq "'")) {
+                return $value.Substring(1, $value.Length - 2)
+            }
+        }
+        return [regex]::Replace($value, '\s+#.*$', '').Trim()
+    }
+    return $null
 }
 
-$AppDir     = Split-Path -Parent $PSScriptRoot
-$PidFile    = Join-Path $AppDir '.server.pid'
-$LogDir     = Join-Path $AppDir 'logs'
-$ConsoleLog = Join-Path $LogDir 'console.log'   # 서버 프로세스의 원시 stdout+stderr (앱 자체 로그는 별도 app.log)
-$Port       = 3000
+function Resolve-Setting {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $processValue = [Environment]::GetEnvironmentVariable($Name)
+    if (-not [string]::IsNullOrWhiteSpace($processValue)) { return $processValue.Trim() }
+    return Get-DotEnvValue -Name $Name
+}
 
-if (-not (Test-Path $LogDir)) {
-    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+$PortRaw = Resolve-Setting -Name 'PORT'
+if ([string]::IsNullOrWhiteSpace($PortRaw)) { $PortRaw = '3000' }
+$Port = 0
+if (-not [int]::TryParse($PortRaw, [ref]$Port) -or $Port -lt 1 -or $Port -gt 65535) {
+    throw "Invalid PORT '$PortRaw'."
+}
+
+$ProviderRaw = Resolve-Setting -Name 'LLM_PROVIDER'
+if ([string]::IsNullOrWhiteSpace($ProviderRaw)) { $ProviderRaw = 'anthropic' }
+$Provider = $ProviderRaw.Trim().ToLowerInvariant()
+switch ($Provider) {
+    'anthropic' { $Profile = 'cloud' }
+    'ollama' { $Profile = 'local' }
+    default { throw "Invalid LLM_PROVIDER '$ProviderRaw'. Use anthropic or ollama." }
+}
+
+$StructuredLog = Join-Path $LogDir ("server.{0}.log" -f $Profile)
+$VenvPython = Join-Path $AppDir '.venv\Scripts\python.exe'
+$PythonExe = if (Test-Path -LiteralPath $VenvPython) { $VenvPython } else { 'python' }
+
+function Resolve-BoundedInt {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][int]$Default,
+        [Parameter(Mandatory = $true)][int]$Minimum,
+        [Parameter(Mandatory = $true)][int]$Maximum
+    )
+    $raw = Resolve-Setting -Name $Name
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $Default }
+    $parsed = 0
+    if (-not [int]::TryParse($raw, [ref]$parsed) -or $parsed -lt $Minimum -or $parsed -gt $Maximum) {
+        throw "Invalid $Name '$raw' (allowed: $Minimum..$Maximum)."
+    }
+    return $parsed
+}
+
+$StartTimeout = Resolve-BoundedInt -Name 'SERVER_START_TIMEOUT_SECONDS' -Default 30 -Minimum 1 -Maximum 300
+$StopTimeout = Resolve-BoundedInt -Name 'SERVER_STOP_TIMEOUT_SECONDS' -Default 30 -Minimum 1 -Maximum 300
+
+function Get-OwnedServerProcess {
+    param([Parameter(Mandatory = $true)][int]$CandidateId)
+    $process = Get-Process -Id $CandidateId -ErrorAction SilentlyContinue
+    if (-not $process) { return $null }
+    try {
+        $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $CandidateId" -ErrorAction Stop
+        $commandLine = [string]$processInfo.CommandLine
+        if ($commandLine -notmatch '(?i)(?:^|\s)-m\s+backend\.main(?:\s|$)') { return $null }
+    } catch {
+        return $null
+    }
+    return $process
 }
 
 function Get-ServerProcess {
-    if (Test-Path $PidFile) {
-        $storedId = Get-Content $PidFile -ErrorAction SilentlyContinue
-        if ($storedId) {
-            $p = Get-Process -Id $storedId -ErrorAction SilentlyContinue
-            if ($p) {
-                return $p
-            }
+    if (Test-Path -LiteralPath $PidFile) {
+        $storedText = Get-Content -LiteralPath $PidFile -ErrorAction SilentlyContinue
+        $storedId = 0
+        if ([int]::TryParse($storedText, [ref]$storedId)) {
+            $process = Get-OwnedServerProcess -CandidateId $storedId
+            if ($process) { return $process }
         }
     }
-    $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($conn) {
-        return Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+    $connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($connection) {
+        $process = Get-OwnedServerProcess -CandidateId $connection.OwningProcess
+        if ($process) { return $process }
+        throw "Port $Port is occupied by a process that is not this FastAPI server; refusing to manage it."
     }
     return $null
 }
 
 function Start-Server {
     $existing = Get-ServerProcess
-    if ($existing) {
-        Write-Host "[WARN] server is already running (PID: $($existing.Id))"
-        exit 1
-    }
+    if ($existing) { Write-Host "[WARN] server already running (PID: $($existing.Id))"; exit 1 }
+    if (-not (Test-Path -LiteralPath $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
 
-    Write-Host "[BUILD] building frontend..."
     Push-Location $AppDir
     try {
-        # PowerShell 5.1: redirecting a native command's stderr (2>&1 / *>>) wraps each
-        # line as a terminating NativeCommandError under $ErrorActionPreference='Stop',
-        # even on exit code 0 (e.g. Vite's harmless deprecation warning). So run it
-        # un-redirected here and only check the real exit code.
+        Write-Host '[BUILD] building React client...'
         npm run build:client
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "[FAIL] frontend build failed (exit $LASTEXITCODE)"
-            exit 1
+        if ($LASTEXITCODE -ne 0) { throw "Frontend build failed (exit $LASTEXITCODE)." }
+        Write-Host "[START] starting FastAPI $Profile profile ($Provider)..."
+        $process = Start-Process -FilePath $PythonExe -ArgumentList @('-m', 'backend.main') -WorkingDirectory $AppDir -WindowStyle Hidden -PassThru
+    } finally { Pop-Location }
+
+    Set-Content -LiteralPath $PidFile -Value $process.Id -Encoding ascii
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    while ($timer.Elapsed.TotalSeconds -lt $StartTimeout) {
+        if (-not (Get-OwnedServerProcess -CandidateId $process.Id)) { break }
+        $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -eq $process.Id } | Select-Object -First 1
+        if ($listener) {
+            Write-Host "[OK] FastAPI server started (PID: $($process.Id))"
+            Write-Host "     profile: $Profile ($Provider)"
+            Write-Host "     url: http://localhost:$Port"
+            Write-Host "     structured log: $StructuredLog"
+            return
         }
-
-        Write-Host "[START] starting server..."
-        # Start-Process -RedirectStandardOutput/-RedirectStandardError refuse to share one
-        # file, so stdout+stderr are merged into a single console.log via cmd.exe's own
-        # redirection instead (runs outside PowerShell's stream machinery entirely).
-        Remove-Item $ConsoleLog -ErrorAction SilentlyContinue
-        $cmdLine = 'npx.cmd tsx server/index.ts >> "' + $ConsoleLog + '" 2>&1'
-        $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', $cmdLine) `
-            -WorkingDirectory $AppDir -WindowStyle Hidden -PassThru
+        Start-Sleep -Milliseconds 250
     }
-    finally {
-        Pop-Location
-    }
-
-    Set-Content -Path $PidFile -Value $proc.Id -Encoding ascii
-    Start-Sleep -Seconds 2
-
-    if (Get-Process -Id $proc.Id -ErrorAction SilentlyContinue) {
-        Write-Host "[OK] server started (PID: $($proc.Id))"
-        Write-Host "     http://localhost:$Port"
-        Write-Host "     console log: $ConsoleLog"
-        Write-Host "     app log:     $LogDir\app.log"
-    }
-    else {
-        Write-Host "[FAIL] server failed to start, see log:"
-        Get-Content $ConsoleLog -Tail 20 -Encoding UTF8 -ErrorAction SilentlyContinue
-        Remove-Item $PidFile -ErrorAction SilentlyContinue
-        exit 1
-    }
+    Write-Host "[FAIL] server did not listen on port $Port within ${StartTimeout}s:"
+    Get-Content -LiteralPath $StructuredLog -Tail 20 -Encoding UTF8 -ErrorAction SilentlyContinue
+    $owned = Get-OwnedServerProcess -CandidateId $process.Id
+    if ($owned) { Stop-Process -Id $owned.Id -Force -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $PidFile -ErrorAction SilentlyContinue
+    exit 1
 }
 
 function Stop-Server {
-    $p = Get-ServerProcess
-    if (-not $p) {
-        Write-Host "[WARN] no server running"
-        Remove-Item $PidFile -ErrorAction SilentlyContinue
-        return
+    $process = Get-ServerProcess
+    if (-not $process) { Write-Host '[WARN] no server running'; Remove-Item -LiteralPath $PidFile -ErrorAction SilentlyContinue; return }
+    Write-Host "[STOP] stopping server (PID: $($process.Id))..."
+    taskkill /T /PID $process.Id 2>&1 | Out-Null
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    while ($timer.Elapsed.TotalSeconds -lt $StopTimeout -and (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) {
+        Start-Sleep -Milliseconds 250
     }
-
-    Write-Host "[STOP] stopping server... (PID: $($p.Id))"
-    taskkill /F /T /PID $p.Id 2>&1 | Out-Null
-    Remove-Item $PidFile -ErrorAction SilentlyContinue
-    Write-Host "[OK] server stopped"
+    if (Get-OwnedServerProcess -CandidateId $process.Id) {
+        Write-Host "[WARN] graceful stop timed out after ${StopTimeout}s; forcing owned process."
+        Stop-Process -Id $process.Id -Force -ErrorAction Stop
+    }
+    Remove-Item -LiteralPath $PidFile -ErrorAction SilentlyContinue
+    Write-Host '[OK] server stopped'
 }
 
 function Show-Status {
-    $p = Get-ServerProcess
-    if ($p) {
-        Write-Host "[OK] server running (PID: $($p.Id))"
-        Write-Host "     http://localhost:$Port"
-        if (-not (Test-Path $PidFile) -or (Get-Content $PidFile -ErrorAction SilentlyContinue) -ne $p.Id) {
-            Set-Content -Path $PidFile -Value $p.Id -Encoding ascii
-            Write-Host "     [WARN] pid file regenerated ($PidFile)"
-        }
-        $AppLog = Join-Path $LogDir 'app.log'
-        if (Test-Path $AppLog) {
-            Write-Host ""
-            Write-Host "-- recent app.log --"
-            Get-Content $AppLog -Tail 5 -Encoding UTF8
-        }
-    }
-    else {
-        Write-Host "[STOPPED] server is not running"
-        Remove-Item $PidFile -ErrorAction SilentlyContinue
-    }
+    $process = Get-ServerProcess
+    if (-not $process) { Write-Host '[STOPPED] server is not running'; return }
+    Write-Host "[OK] FastAPI server running (PID: $($process.Id))"
+    Write-Host "     profile: $Profile ($Provider)"
+    Write-Host "     url: http://localhost:$Port"
+    Write-Host "     structured log: $StructuredLog"
 }
 
 function Show-Logs {
-    $AppLog = Join-Path $LogDir 'app.log'
-    if (-not (Test-Path $AppLog)) {
-        Write-Host "로그 파일 없음: $AppLog"
-        return
-    }
-    Write-Host "-- app.log (Ctrl+C로 종료) --"
-    # -Encoding UTF8을 빼먹으면 시스템 기본 코드페이지(CP949 등)로 읽어 한글이 깨진다.
-    Get-Content $AppLog -Tail 20 -Wait -Encoding UTF8
+    if (-not (Test-Path -LiteralPath $StructuredLog)) { Write-Host "Log file not found: $StructuredLog"; return }
+    Get-Content -LiteralPath $StructuredLog -Tail 20 -Wait -Encoding UTF8
 }
 
 switch ($Action) {
-    'start'   { Start-Server }
-    'stop'    { Stop-Server }
-    'status'  { Show-Status }
+    'start' { Start-Server }
+    'stop' { Stop-Server }
     'restart' { Stop-Server; Start-Sleep -Seconds 1; Start-Server }
-    'logs'    { Show-Logs }
+    'status' { Show-Status }
+    'logs' { Show-Logs }
 }

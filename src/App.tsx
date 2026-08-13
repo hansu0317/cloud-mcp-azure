@@ -1,8 +1,9 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import Header       from './components/Header'
-import Sidebar      from './components/Sidebar'
-import NotebookView from './components/NotebookView'
-import { API, TOAST_DURATION_MS } from './constants'
+import Header             from './components/Header'
+import Sidebar            from './components/Sidebar'
+import NotebookView       from './components/NotebookView'
+import InstructionsModal  from './components/InstructionsModal'
+import { TOAST_DURATION_MS } from './constants'
 import {
   listProjects, createProject, getProject, updateProject, deleteProject as apiDeleteProject,
 } from './api'
@@ -14,11 +15,14 @@ import './App.css'
 // 가리키는 프로젝트가 삭제됐어도 목록의 최신 프로젝트로 대체될 뿐 데이터 유실은 없다.
 const LAST_ACTIVE_KEY = 'crm-ai-chat:lastActiveProjectId'
 
+// 프로젝트 응답에 instructions가 없는(마이그레이션 전 캐시 등) 경우를 대비한 안전값.
+const EMPTY_INSTRUCTIONS: Instructions = { joins: [], terms: [], examples: [] }
+
 export default function App() {
   const [projectList,   setProjectList]   = useState<ProjectSummary[]>([])
   const [activeProject, setActiveProject] = useState<ProjectDetail | null>(null)
-  const [instructions,  setInstructions]  = useState<Instructions>({ joins: [], terms: [], examples: [] })
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [showInstructions, setShowInstructions] = useState(false)
   const [toast,         setToast]         = useState<string | null>(null)
 
   const toastTimer  = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -29,13 +33,6 @@ export default function App() {
     if (toastTimer.current) clearTimeout(toastTimer.current)
     setToast(msg)
     toastTimer.current = setTimeout(() => setToast(null), ms)
-  }, [])
-
-  useEffect(() => {
-    fetch(API.INSTRUCTIONS)
-      .then(r => r.json())
-      .then((d: Instructions) => setInstructions(d))
-      .catch(() => {})
   }, [])
 
   const refreshProjectList = useCallback(() => {
@@ -127,12 +124,23 @@ export default function App() {
     setSidebarCollapsed(false)
   }, [])
 
+  // 2026-08-12: 지침은 프로젝트별로 분리됐다(activeProject.instructions) — 저장도
+  // updateProject로 그 프로젝트의 필드만 바꾼다. 저장 성공 시 App 상태도 즉시
+  // 갱신한다. 서버가 매 질문마다 저장된 최신 지침을 직접 읽으므로 재접속은 필요 없다.
+  const handleSaveInstructions = useCallback(async (next: Instructions) => {
+    if (!activeProject) return
+    await updateProject(activeProject.id, { instructions: next })
+    setActiveProject(prev => (prev ? { ...prev, instructions: next } : prev))
+    showToast('지침이 저장됐습니다')
+  }, [activeProject, showToast])
+
   return (
     <div className="app">
       <Header
         activeProjectName={activeProject?.name ?? ''}
         onOpenProjects={openProjectsPanel}
         onToggleSidebar={() => setSidebarCollapsed(c => !c)}
+        onOpenInstructions={() => setShowInstructions(true)}
         notebookRef={notebookRef}
       />
       <div className="body">
@@ -151,8 +159,6 @@ export default function App() {
             key={activeProject.id}
             ref={notebookRef}
             sessionId={activeProject.id}
-            instructions={instructions}
-            tables={activeProject.tables}
             initialCells={activeProject.cells}
             onCellsChange={handleCellsChange}
             showToast={showToast}
@@ -161,6 +167,15 @@ export default function App() {
       </div>
 
       {toast && <div className="toast">{toast}</div>}
+
+      {showInstructions && activeProject && (
+        <InstructionsModal
+          projectName={activeProject.name}
+          instructions={activeProject.instructions ?? EMPTY_INSTRUCTIONS}
+          onSave={handleSaveInstructions}
+          onClose={() => setShowInstructions(false)}
+        />
+      )}
     </div>
   )
 }

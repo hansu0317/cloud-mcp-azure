@@ -1,29 +1,21 @@
 {
-  "name": "crm-chat",
+  "name": "crm-ai-chat",
   "version": "2.0.0",
-  "description": "Quali CRM AI Notebook — Claude API + Dataverse Web API (읽기 전용)",
-  "main": "server/index.ts",
+  "private": true,
+  "description": "Quali CRM AI Notebook — Python/FastAPI + Anthropic/Ollama provider profiles",
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
-    "dev:server": "tsx watch server/index.ts",
+    "dev:server": "python -m backend.dev",
     "dev:client": "vite",
-    "build": "npm run build:client && npm run build:server",
+    "build": "npm run build:client",
     "build:client": "vite build",
-    "build:server": "tsc -p tsconfig.server.json",
-    "start": "node dist-server/server/index.js",
-    "type-check": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
+    "start": "python -m backend.main",
+    "type-check": "tsc --noEmit",
+    "test": "python -m unittest discover -s tests_py -p \"test_*.py\" -v && python -m unittest discover -s tests_python -p \"test_*.py\" -v",
+    "test:e2e:safe": "python scripts/e2e_fastapi_safe.py",
     "preview": "vite preview"
   },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.70.1",
-    "dotenv": "^16.4.5",
-    "express": "^4.18.2",
-    "express-rate-limit": "^7.3.1",
-    "rotating-file-stream": "^3.2.3"
-  },
   "devDependencies": {
-    "@types/express": "^5.0.6",
-    "@types/node": "^25.9.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.3.1",
@@ -32,7 +24,6 @@
     "marked": "^13.0.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vite": "^5.3.4"
   }

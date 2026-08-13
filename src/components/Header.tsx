@@ -3,13 +3,14 @@ import type { NotebookHandle } from '../types'
 import { APP_NAME } from '../constants'
 
 interface Props {
-  activeProjectName: string
-  onOpenProjects:    () => void
-  onToggleSidebar:   () => void
-  notebookRef:       RefObject<NotebookHandle | null>
+  activeProjectName:  string
+  onOpenProjects:     () => void
+  onToggleSidebar:    () => void
+  onOpenInstructions: () => void
+  notebookRef:        RefObject<NotebookHandle | null>
 }
 
-export default function Header({ activeProjectName, onOpenProjects, onToggleSidebar, notebookRef }: Props) {
+export default function Header({ activeProjectName, onOpenProjects, onToggleSidebar, onOpenInstructions, notebookRef }: Props) {
   return (
     <header>
       <div className="logo">
@@ -26,6 +27,7 @@ export default function Header({ activeProjectName, onOpenProjects, onToggleSide
         <button className="btn" onClick={() => notebookRef.current?.addCell()}>＋ 셀 추가</button>
       </div>
       <div className="h-spacer" />
+      <button className="btn" onClick={onOpenInstructions} title="지침 설정 (조인 관계·용어·예시)">🔗 지침</button>
       <button className="btn" onClick={onToggleSidebar} title="사이드바 토글">≡</button>
     </header>
   )

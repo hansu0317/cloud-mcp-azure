@@ -1,149 +1,126 @@
-#!/bin/bash
-# CRM Chat 서버 관리 스크립트
-# 사용법: ./server.sh {start|stop|status|restart|logs}
+#!/usr/bin/env bash
+# Quali CRM AI Notebook FastAPI server management
+set -u
+set -o pipefail
 
-APP_NAME="crm-mcp"
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ENV_FILE="$APP_DIR/.env"
 PID_FILE="$APP_DIR/.server.pid"
 LOG_DIR="$APP_DIR/logs"
-LOG_FILE="$LOG_DIR/app.log"
-NODE_BIN="$(which node)"
 
-mkdir -p "$LOG_DIR"
-
-case "$1" in
-  start)
-    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-      echo "⚠️  서버가 이미 실행 중입니다. (PID: $(cat "$PID_FILE"))"
-      exit 1
-    fi
-    # 프론트엔드 빌드 (dist/) — tsx로 소스 직접 실행하므로 서버 빌드는 불필요
-    echo "🔨 프론트엔드 빌드 중..."
-    if ! ( cd "$APP_DIR" && npm run build:client ) >> "$LOG_FILE" 2>&1; then
-      echo "❌ 프론트엔드 빌드 실패. 로그를 확인하세요:"
-      tail -20 "$LOG_FILE"
-      exit 1
-    fi
-    echo "▶  서버 시작 중..."
-    nohup npx --prefix "$APP_DIR" tsx "$APP_DIR/server/index.ts" >> "$LOG_FILE" 2>&1 &
-    echo $! > "$PID_FILE"
-    sleep 1
-    if kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-      echo "✅ 서버 시작 완료 (PID: $(cat "$PID_FILE"))"
-      echo "   http://localhost:3000"
-      echo "   로그: $LOG_FILE"
-    else
-      echo "❌ 서버 시작 실패. 로그를 확인하세요:"
-      tail -20 "$LOG_FILE"
-      rm -f "$PID_FILE"
-      exit 1
-    fi
-    ;;
-
-  stop)
-    # PID 파일 없어도 포트로 찾아서 종료 시도
-    PID=""
-    if [ -f "$PID_FILE" ]; then
-      PID="$(cat "$PID_FILE")"
-      # PID 파일은 있지만 프로세스가 없으면 포트로 재탐색
-      if ! kill -0 "$PID" 2>/dev/null; then
-        PID=""
+read_env_value() {
+  local key="$1" raw value pattern="^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=(.*)$"
+  [ -f "$ENV_FILE" ] || return 1
+  while IFS= read -r raw || [ -n "$raw" ]; do
+    raw="${raw%$'\r'}"
+    if [[ "$raw" =~ $pattern ]]; then
+      value="${BASH_REMATCH[2]}"; value="${value#"${value%%[![:space:]]*}"}"; value="${value%"${value##*[![:space:]]}"}"
+      if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] || [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
+        value="${value:1:${#value}-2}"
+      else
+        value="${value%%[[:space:]]#*}"; value="${value%"${value##*[![:space:]]}"}"
       fi
+      printf '%s\n' "$value"; return 0
     fi
+  done < "$ENV_FILE"
+  return 1
+}
 
-    # PID 파일로 못 찾으면 포트 3000 점유 프로세스에서 찾기
-    if [ -z "$PID" ]; then
-      PID="$(fuser 3000/tcp 2>/dev/null | tr -d ' ')"
-    fi
+PORT="${PORT:-$(read_env_value PORT || true)}"; [ -n "$PORT" ] || PORT=3000
+PROVIDER="${LLM_PROVIDER:-$(read_env_value LLM_PROVIDER || true)}"; [ -n "$PROVIDER" ] || PROVIDER=anthropic
+PROVIDER="$(printf '%s' "$PROVIDER" | tr '[:upper:]' '[:lower:]')"
+case "$PROVIDER" in anthropic) PROFILE=cloud ;; ollama) PROFILE=local ;; *) echo "Invalid LLM_PROVIDER: $PROVIDER" >&2; exit 1 ;; esac
+case "$PORT" in *[!0-9]*|'') echo "Invalid PORT: $PORT" >&2; exit 1 ;; esac
+[ "$PORT" -ge 1 ] 2>/dev/null && [ "$PORT" -le 65535 ] 2>/dev/null || { echo "Invalid PORT range: $PORT (allowed: 1..65535)" >&2; exit 1; }
 
-    if [ -z "$PID" ]; then
-      echo "⚠️  실행 중인 서버가 없습니다."
-      rm -f "$PID_FILE"
-      exit 0
-    fi
+bounded_timeout() {
+  local name="$1" default="$2" value
+  eval "value=\${$name:-}"
+  [ -n "$value" ] || value="$(read_env_value "$name" || true)"
+  [ -n "$value" ] || value="$default"
+  case "$value" in *[!0-9]*|'') echo "Invalid $name: $value" >&2; exit 1 ;; esac
+  [ "$value" -ge 1 ] && [ "$value" -le 300 ] || { echo "Invalid $name range: $value (allowed: 1..300)" >&2; exit 1; }
+  printf '%s\n' "$value"
+}
 
-    echo "🛑 서버 종료 중... (PID: $PID)"
-    kill "$PID" 2>/dev/null
+START_TIMEOUT="$(bounded_timeout SERVER_START_TIMEOUT_SECONDS 30)"
+STOP_TIMEOUT="$(bounded_timeout SERVER_STOP_TIMEOUT_SECONDS 30)"
 
-    # 최대 10초 대기하며 종료 확인
-    WAIT=0
-    while kill -0 "$PID" 2>/dev/null; do
-      sleep 1
-      WAIT=$((WAIT + 1))
-      if [ "$WAIT" -ge 10 ]; then
-        echo "⚠️  Graceful Shutdown 타임아웃 — 강제 종료합니다."
-        kill -9 "$PID" 2>/dev/null
-        break
-      fi
-    done
+STRUCTURED_LOG="$LOG_DIR/server.$PROFILE.log"
+PYTHON_BIN="$APP_DIR/.venv/bin/python"; [ -x "$PYTHON_BIN" ] || PYTHON_BIN="$(command -v python3 || command -v python)"
 
-    rm -f "$PID_FILE"
-    echo "✅ 서버 중지 완료"
-    ;;
+is_owned_pid() {
+  local candidate="$1" command cwd
+  case "$candidate" in *[!0-9]*|'') return 1 ;; esac
+  kill -0 "$candidate" 2>/dev/null || return 1
+  command="$(ps -p "$candidate" -o command= 2>/dev/null || true)"
+  case "$command" in *"-m backend.main"*) ;; *) return 1 ;; esac
+  if [ -e "/proc/$candidate/cwd" ]; then
+    cwd="$(readlink "/proc/$candidate/cwd" 2>/dev/null || true)"
+    [ "$cwd" = "$APP_DIR" ] || return 1
+  fi
+  return 0
+}
 
-  restart)
-    "$0" stop
-    sleep 1
-    "$0" start
-    ;;
+port_owner_pid() {
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -t -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | head -1
+  elif command -v fuser >/dev/null 2>&1; then
+    fuser "$PORT/tcp" 2>/dev/null | awk '{print $1}'
+  fi
+}
 
-  status)
-    # PID 파일로 먼저 확인, 없으면 포트 3000으로 탐색
-    PID=""
-    if [ -f "$PID_FILE" ]; then
-      PID="$(cat "$PID_FILE")"
-      if ! kill -0 "$PID" 2>/dev/null; then
-        PID=""
-      fi
-    fi
-    if [ -z "$PID" ]; then
-      PID="$(fuser 3000/tcp 2>/dev/null | tr -d ' ')"
-    fi
+find_server_pid() {
+  local candidate
+  if [ -f "$PID_FILE" ]; then
+    candidate="$(cat "$PID_FILE" 2>/dev/null || true)"
+    is_owned_pid "$candidate" && { printf '%s\n' "$candidate"; return; }
+  fi
+  candidate="$(port_owner_pid || true)"
+  [ -z "$candidate" ] || is_owned_pid "$candidate" && printf '%s\n' "$candidate"
+}
 
-    if [ -n "$PID" ]; then
-      echo "✅ 서버 실행 중 (PID: $PID)"
-      echo "   http://localhost:3000"
-      # PID 파일이 없었으면 복구
-      if [ ! -f "$PID_FILE" ] || [ "$(cat "$PID_FILE" 2>/dev/null)" != "$PID" ]; then
-        echo "$PID" > "$PID_FILE"
-        echo "   ⚠️  PID 파일 재생성됨 ($PID_FILE)"
-      fi
-      APP_LOG="$LOG_DIR/app.log"
-      if [ -f "$APP_LOG" ]; then
-        echo ""
-        echo "── 최근 로그 ──────────────────────────────"
-        tail -5 "$APP_LOG"
-      fi
-    else
-      echo "🛑 서버 중지 상태"
-      rm -f "$PID_FILE" 2>/dev/null
-    fi
-    ;;
+start_server() {
+  local existing pid owner waited
+  existing="$(find_server_pid || true)"; [ -z "$existing" ] || { echo "[WARN] server already running (PID: $existing)"; exit 1; }
+  owner="$(port_owner_pid || true)"
+  [ -z "$owner" ] || { echo "[FAIL] port $PORT is occupied by a process this script does not own; refusing to manage it." >&2; exit 1; }
+  mkdir -p "$LOG_DIR"
+  echo '[BUILD] building React client...'; (cd "$APP_DIR" && npm run build:client) || exit 1
+  echo "[START] starting FastAPI $PROFILE profile ($PROVIDER)..."
+  (cd "$APP_DIR" && nohup "$PYTHON_BIN" -m backend.main >/dev/null 2>&1 & echo $! > "$PID_FILE")
+  pid="$(cat "$PID_FILE")"; waited=0
+  while [ "$waited" -lt "$START_TIMEOUT" ]; do
+    is_owned_pid "$pid" || break
+    owner="$(port_owner_pid || true)"
+    [ "$owner" = "$pid" ] && break
+    sleep 1; waited=$((waited+1))
+  done
+  owner="$(port_owner_pid || true)"
+  if ! is_owned_pid "$pid" || [ "$owner" != "$pid" ]; then
+    echo "[FAIL] server did not listen on port $PORT within ${START_TIMEOUT}s"
+    tail -20 "$STRUCTURED_LOG" 2>/dev/null || true
+    is_owned_pid "$pid" && kill -9 "$pid" 2>/dev/null || true
+    rm -f "$PID_FILE"; exit 1
+  fi
+  echo "[OK] FastAPI server started (PID: $pid)"; echo "     profile: $PROFILE ($PROVIDER)"; echo "     url: http://localhost:$PORT"; echo "     structured log: $STRUCTURED_LOG"
+}
 
-  logs)
-    APP_LOG="$LOG_DIR/app.log"
-    if [ -f "$APP_LOG" ]; then
-      echo "── app.log ─────────────────────────────────"
-      tail -f "$APP_LOG"
-    else
-      echo "로그 파일 없음: $APP_LOG"
-    fi
-    ;;
+stop_server() {
+  local pid; pid="$(find_server_pid || true)"; [ -n "$pid" ] || { echo '[WARN] no server running'; rm -f "$PID_FILE"; return; }
+  kill "$pid" 2>/dev/null || true
+  local waited=0; while is_owned_pid "$pid"; do
+    sleep 1; waited=$((waited+1))
+    [ "$waited" -lt "$STOP_TIMEOUT" ] || { echo "[WARN] graceful stop timed out after ${STOP_TIMEOUT}s; forcing owned process."; is_owned_pid "$pid" && kill -9 "$pid" 2>/dev/null || true; break; }
+  done
+  rm -f "$PID_FILE"; echo '[OK] server stopped'
+}
 
-  cron-setup)
-    CRON_CMD="0 10 * * * $APP_DIR/scripts/log_rotate.sh >> $LOG_DIR/rotate.log 2>&1"
-    (crontab -l 2>/dev/null | grep -v "log_rotate.sh"; echo "$CRON_CMD") | crontab -
-    echo "✅ 크론탭 등록 완료: 매일 오전 10시 로그 로테이션"
-    crontab -l | grep log_rotate
-    ;;
-
-  cron-remove)
-    (crontab -l 2>/dev/null | grep -v "log_rotate.sh") | crontab -
-    echo "🗑  크론탭 제거 완료"
-    ;;
-
-  *)
-    echo "사용법: $0 {start|stop|restart|status|logs|cron-setup|cron-remove}"
-    exit 1
-    ;;
+case "${1:-}" in
+  start) start_server ;;
+  stop) stop_server ;;
+  restart) stop_server; sleep 1; start_server ;;
+  status) pid="$(find_server_pid || true)"; [ -n "$pid" ] && echo "[OK] FastAPI server running (PID: $pid, $PROFILE/$PROVIDER, http://localhost:$PORT)" || echo '[STOPPED] server is not running' ;;
+  logs) [ -f "$STRUCTURED_LOG" ] && tail -20 -f "$STRUCTURED_LOG" || echo "Log file not found: $STRUCTURED_LOG" ;;
+  *) echo "Usage: $0 {start|stop|restart|status|logs}"; exit 1 ;;
 esac

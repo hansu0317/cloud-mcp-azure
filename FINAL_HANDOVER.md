@@ -1,0 +1,529 @@
+# CRM AI Notebook 통합 인수인계서
+
+> 최종 갱신: 2026-08-13 (Asia/Seoul)<br>
+> 문서 버전: `3.0`<br>
+> 상태: `Final` — 신규 기능 개발 종료, 유지보수 전환<br>
+> 적용 대상: `crm-ai-chat` 단일 프로젝트 — `LLM_PROVIDER`로 Cloud(anthropic)/Local(ollama) 프로필만 구분<br>
+> (2026-08-13부터: 과거 별도 동기화하던 `crm-ai-chat-local-llm` mirror 저장소는 폐기)<br>
+> 기준 런타임: React + TypeScript 프론트엔드 + Python/FastAPI 백엔드
+
+이 문서는 `defineview/`의 8개 예시가 보여 준 문서 유형과 표 형식을 참고해 현재 코드를 기준으로 다시 작성한 최종 인수인계 문서다. 예시 이미지의 업무 내용은 제품 사양이 아니며 `defineview/`는 Git에서 제외한다.
+
+**제품 코드의 기준은 `crm-ai-chat` 하나뿐이다.** Cloud/Local은 별도 저장소가 아니라 같은 코드에서 `LLM_PROVIDER` 값만 다른 두 배포 프로필이며, 동일한 Python/FastAPI와 프론트엔드를 사용하고 배포 환경의 LLM 제공자·모델·접속 정보와 활성 로그 파일만 다르다.
+
+---
+
+## 0. 먼저 읽을 결론
+
+### 0.1 종료 상태
+
+- 자연어 질문을 LLM이 해석해 Microsoft Dataverse Web API의 OData GET으로 바꾸는 노트북형 사내 도구다. SQL을 생성·실행하는 Text-to-SQL이 아니라 **Text-to-OData**다.
+- 브라우저, FastAPI, 프로젝트 저장소, 프롬프트, Dataverse 도구, SSE, 오류 계약은 두 프로필이 같다.
+- 차이는 `LLM_PROVIDER`와 해당 제공자의 모델·base URL·자격증명뿐이다.
+- Cloud는 `anthropic`, Local은 `ollama` 프로필을 사용한다.
+- 활성 로그는 프로필별로 정확히 하나다. Cloud는 `logs/server.cloud.log`, Local은 `logs/server.local.log`다.
+- 앱이 LLM에 제공하는 CRM 도구는 `dataverse_describe_table`, `dataverse_query` 두 개뿐이며 생성·수정·삭제 도구는 없다.
+- 신규 기능 개발은 종료한다. 장애·보안·규정·업무 변경이 확인될 때만 유지보수한다.
+- 현재 사용자 인증·RBAC·프로젝트 소유권이 없으므로 인터넷 공개 또는 불특정 다중 사용자 운영에 적합하지 않다.
+
+### 0.2 두 프로필 비교
+
+| 항목 | Cloud 프로필 | Local 프로필 | 공통 여부 |
+|---|---|---|:---:|
+| 저장소 역할 | `crm-ai-chat` 단일 저장소, `.env`의 `LLM_PROVIDER=anthropic` | 같은 저장소, `LLM_PROVIDER=ollama` | O(같은 저장소) |
+| 프론트엔드 | React 18 + TypeScript + Vite | 동일 | O |
+| 백엔드 | Python + FastAPI/Uvicorn | 동일 | O |
+| 채팅 오케스트레이터 | `backend/chat_api.py` | 동일 | O |
+| LLM 어댑터 | Anthropic Messages REST/SSE | Ollama native `/api/chat` NDJSON | 프로필 차이 |
+| 기본 모델 | `claude-haiku-4-5` | `qwen3:30b-a3b` | 환경에서 변경 가능 |
+| LLM 상태 확인 | Anthropic `/v1/models` | Ollama `/api/tags` | 어댑터 내부 차이 |
+| Dataverse/API/UI/저장 | 동일 | 동일 | O |
+| 활성 로그 | `logs/server.cloud.log` | `logs/server.local.log` | 파일명만 다름 |
+| 질문 데이터 위치 | Anthropic 외부 서비스로 전달 가능 | Ollama 실행 호스트에서 처리 | 데이터 경계 차이 |
+
+이 저장소에서 현행 백엔드 기능 판단의 기준은 `backend/`, `requirements.txt`, `package.json`이다. `npm run dev:server`는 `backend.main:app`을 Uvicorn으로 실행하고 `npm start`는 `python -m backend.main`을 실행한다. 과거 `server/*.ts`, `dist-server/`, `claudeapi/` 소스가 checkout에 남아 있어도 활성 런타임 근거로 사용하지 않는다.
+
+### 0.3 유지보수 원칙
+
+1. 공통 기능은 canonical 저장소에서 수정하고 두 프로필을 회귀 검증한 뒤 mirror에 동기화한다.
+2. 제공자별 코드는 `backend/anthropic_provider.py`, `backend/ollama_provider.py` 경계 안에 둔다.
+3. `backend/chat_api.py`와 프론트엔드에 제공자별 분기를 추가하지 않는다.
+4. 배포 차이는 `.env`로만 표현한다.
+5. `data/`, `logs/`, `.env`는 Git에 없으므로 별도 백업 없이 저장소만 복제하면 복구되지 않는다.
+
+---
+
+## 1. 제품 범위
+
+### 1.1 제공 기능
+
+- 프로젝트 생성·조회·이름 변경·삭제
+- 프로젝트별 Dataverse 테이블 범위 설정
+- 프로젝트별 테이블 관계·업무 용어·질문 예시 지침 저장
+- 로그 기반 지침 초안 생성과 사람 검토 후 저장
+- 질문 셀 추가·실행·전체 실행·삭제·자동 저장
+- LLM 도구 호출과 실제 OData 상대 경로 표시
+- Markdown 답변, 표 CSV 및 일반 답변 TXT 내보내기
+- Dataverse 스키마 조회·캐시·전체 갱신
+- 서버 상태 및 활성 프로필 로그 조회 API
+- 성공한 대화 이력의 프로젝트별 영속화와 이전 형식 자동 정규화
+
+### 1.2 범위 밖
+
+- Dataverse 레코드 생성·수정·삭제
+- 사용자 로그인, 사용자별 권한, RBAC, 프로젝트 소유권
+- 공유 데이터베이스, 다중 인스턴스 동기화, 트랜잭션
+- 자동 백업·휴지통·삭제 복구
+- 신규 Dataverse 테이블의 자동 발견과 초기 카탈로그 생성
+- 인터넷 공개를 위한 TLS/WAF/SSO/감사 체계
+- Ollama native API와 Anthropic Messages API 이외의 LLM 프로토콜 보장
+
+### 1.3 핵심 용어
+
+| 용어 | 정의 |
+|---|---|
+| 프로필 | 같은 앱에서 LLM 제공자와 로그 파일을 선택하는 실행 설정. `anthropic`은 Cloud, `ollama`는 Local이다. |
+| 프로젝트 | 이름, 테이블 범위, 지침, 셀, LLM history를 한 JSON 파일로 저장하는 작업 단위 |
+| 테이블 범위 | 프로젝트가 LLM에 제공하고 서버가 OData 시작 엔티티 집합에 적용하는 범위. Dataverse 보안 역할을 대체하지 않는다. |
+| canonical history | `text`, `tool_call`, `tool_result` 블록으로 통일한 공급자 중립 대화 형식 |
+| 스키마 캐시 | `data/schema.json`의 테이블·컬럼·라벨·엔티티 집합명 메타데이터 |
+| SSE | 서버가 `text`, `tool`, `query`, `error`, `done` 이벤트를 브라우저에 전달하는 스트림 |
+
+---
+
+## 2. 통합 아키텍처
+
+```mermaid
+flowchart LR
+    U["사내 사용자"] --> SPA["React + TypeScript SPA"]
+    SPA <-->|"JSON / SSE"| API["공통 Python/FastAPI API"]
+
+    subgraph APP["canonical과 동기화된 mirror의 동일 활성 코드"]
+        API --> CHAT["공통 채팅 오케스트레이터"]
+        CHAT --> FACTORY{"LLM_PROVIDER"}
+        FACTORY -->|"anthropic"| A["Anthropic adapter"]
+        FACTORY -->|"ollama"| O["Ollama adapter"]
+        CHAT --> GUARD["프로젝트 범위 + OData guard"]
+        API --> PROJECTS["프로젝트 저장소"]
+        API --> SCHEMA["스키마 캐시"]
+        API --> DRAFT["지침 초안"]
+        API --> LOG["프로필 로그"]
+    end
+
+    A --> ANTH["Anthropic API"]
+    O --> OLLAMA["Ollama host"]
+    GUARD --> DV["Dataverse Web API v9.2"]
+    PROJECTS <--> PF[("data/projects/*.json")]
+    SCHEMA <--> SF[("data/schema.json")]
+    LOG --> LF[("server.cloud.log 또는 server.local.log")]
+```
+
+### 2.1 계층별 책임
+
+| 계층 | 주요 파일 | 책임 |
+|---|---|---|
+| UI | `src/` | 프로젝트·셀·지침 UI, REST/SSE 소비, 자동 저장, 내보내기 |
+| API | `backend/main.py` | FastAPI 12개 API, 정적 파일, 선택 API 키, 레이트리밋, health |
+| 채팅 | `backend/chat_api.py` | 서버 권위 컨텍스트, 프롬프트, 최대 6회 도구 루프, 롤백·저장 |
+| 공급자 계약 | `backend/llm_provider.py` | 공급자 중립 message/tool/usage/health 타입 |
+| 공급자 어댑터 | `backend/anthropic_provider.py`, `backend/ollama_provider.py` | 외부 프로토콜 ↔ canonical 계약 변환 |
+| 공급자 선택 | `backend/provider_factory.py` | `LLM_PROVIDER` 검증과 어댑터 수명주기 |
+| history | `backend/history.py` | 기존 형식 정규화, describe 결과 압축, 질문 경계 trim |
+| Dataverse | `backend/dataverse.py` | Entra client credentials, GET, 메타데이터 조회, 토큰 캐시 |
+| 프로젝트 | `backend/projects.py` | 프로젝트 JSON CRUD, ID 검증, history 비노출·저장 |
+| 로깅 | `backend/logger.py` | 프로필 로그 선택, JSON Lines 기록, 회전·gzip |
+
+### 2.2 공급자 중립 계약
+
+- 채팅 코어는 `LlmProvider.stream()`과 `LlmProvider.health()`만 사용한다.
+- Anthropic의 `tool_use`와 Ollama의 `tool_calls`는 모두 `tool_call`로 변환한다.
+- 도구 결과는 공급자에 관계없이 `tool_result`로 저장한다.
+- 이전 Anthropic/OpenAI 계열 history는 읽을 때 메모리에서 canonical 형식으로 변환하고 다음 성공 저장 때 교체한다.
+- 공급자를 바꿔도 프로젝트와 history 형식은 유지된다.
+
+### 2.3 활성·레거시 경계
+
+| 경로 | 현재 상태 | 처리 원칙 |
+|---|---|---|
+| `backend/` | 유일한 활성 Python/FastAPI 백엔드 | 현행 기능·장애 수정의 기준 |
+| `server/*.ts`, `dist-server/` | 이전 TypeScript 서버 흔적 | 실행·빌드·문서 근거로 사용하지 않음 |
+| `claudeapi/` | 이전 분리 채팅 오케스트레이터 흔적 | 현행 실행 대상 아님 |
+| `data/instructions.json` | 이전 전역 지침 | 프로젝트에 `instructions`가 없을 때 한 번 복사하는 마이그레이션 원본 |
+
+---
+
+## 3. 사용자 화면과 메뉴
+
+브라우저 라우트는 `/` 하나다. 별도 로그인·관리자 화면은 없다.
+
+| Screen ID | 화면 | 진입 | 핵심 기능 |
+|---|---|---|---|
+| `UI-01` | 메인 노트북 | `/` | 셀 실행·전체 실행·추가, 프로젝트 전환 |
+| `UI-02` | 프로젝트 사이드바 | 좌측 패널 | 프로젝트 CRUD, 테이블 범위, 스키마 갱신 |
+| `UI-03` | 테이블 선택 | 프로젝트의 테이블 수/추가 버튼 | 검색·도메인 필터·전체/개별 선택 |
+| `UI-04` | 프로젝트별 지침 | 헤더 `지침` | 관계·용어·예시 편집, 공통 초안 생성 |
+| `UI-05` | 질문 셀 | 노트북 반복 항목 | 입력·실행·상태·답변·쿼리·내보내기 |
+| `UI-06` | 서버 로그 | 사용자 메뉴 없음 | 컴포넌트는 있으나 현재 미연결 |
+
+UI는 Cloud/Local에서 같으며 제공자 이름은 연결 환경 표시와 응답 특성에만 영향을 준다. 지침 초안 버튼과 `/api/instructions/draft`도 두 프로필에서 같다.
+
+---
+
+## 4. 질문 처리 계약
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant API as FastAPI /api/chat
+    participant P as Project store
+    participant L as Selected LLM adapter
+    participant D as Dataverse
+
+    B->>API: {message, sessionId}
+    API->>P: 프로젝트 존재·tables·instructions·history 조회
+    alt 프로젝트 없음
+        API-->>B: HTTP 404
+    else LLM 설정 없음
+        API-->>B: HTTP 503
+    else 처리 가능
+        API->>API: canonical history 복구 + 질문 추가
+        loop 최대 6회
+            API->>L: system + canonical messages + 2 tools
+            L-->>API: text/tool_start/done
+            alt tool call 있음
+                API-->>B: tool, query
+                API->>D: 허용된 OData GET 또는 캐시 describe
+                D-->>API: 결과
+                API->>L: canonical tool_result
+            else 최종 답변
+                API-->>B: text
+            end
+        end
+        API->>P: 정상 history 저장
+        API-->>B: done
+    end
+```
+
+### 4.1 서버 권위 규칙
+
+- 브라우저는 `message`, `sessionId`만 전송한다.
+- 서버가 저장 프로젝트의 `tables`, `instructions`, `history`를 다시 읽는다.
+- 요청 body로 테이블 범위나 지침을 바꿀 수 없다.
+- 존재하지 않거나 형식이 잘못된 `sessionId`는 404이며 새 프로젝트 파일을 만들지 않는다.
+- 프로젝트 생성·수정에서 `name`, `tables`, `instructions`, `cells`의 외형을 검사하고 `tables`의 모든 논리명이 현재 카탈로그에 등록됐는지 확인한다.
+- 허용할 `entitySetName`이 하나도 없으면 조회를 거부하는 fail-closed 방식이다.
+- OData 입력은 엔티티 집합명으로 시작하는 상대경로만 허용하며 절대 URL, CR/LF, 역슬래시, fragment, `$batch`, `$ref`, `$value`를 Dataverse 호출 전에 거절한다.
+- 일반 컬렉션 쿼리에 `$top`이 없으면 `$top=100`을 추가하고, 명시된 `$top`이 100을 넘으면 100으로 낮춘다. `$count=true`도 행 조회이므로 같은 상한을 적용한다.
+- 도구 결과 전체는 직렬화 기준 최대 8 KiB이며, JSON `value` 배열은 그 안에서 최대 100행만 모델에 제공한다.
+- 오류·취소 때 현재 요청에서 추가한 history를 롤백한다.
+
+### 4.2 LLM 도구
+
+| 도구 | 입력 | 실행 주체 | 효과 |
+|---|---|---|---|
+| `dataverse_describe_table` | `{ table }` | 앱 서버 | `data/schema.json`에서 컬럼·타입·엔티티 집합명을 읽음 |
+| `dataverse_query` | `{ path }` | 앱 서버 | Dataverse Web API에 인증된 GET 수행 |
+
+도구가 정의돼 있다는 사실과 실제 사용 기록은 다르다. 종료 전 레거시 로그·저장 history 감사에서는 두 도구 모두 실제 호출 흔적이 확인됐다. 로그와 history는 같은 호출을 중복 기록할 수 있으므로 단순 합산하지 않는다.
+
+### 4.3 별도 Dataverse MCP와의 관계
+
+`C:\Users\hansu\projects\crm-ai-chat-dataverse-mcp`는 표준 MCP(JSON-RPC over stdio) 서버로 `dataverse://catalog` resource와 같은 이름의 두 도구를 제공한다. 그러나 이 웹앱은 그 MCP 프로세스를 자식 프로세스나 네트워크 서비스로 호출하지 않는다.
+
+| 경로 | 실행 방식 | 용도 |
+|---|---|---|
+| 통합 웹앱 | FastAPI 내부 provider-neutral tool calling → `backend/dataverse.py` → REST/OData GET | 브라우저 제품의 실제 질문 처리 |
+| 별도 MCP 저장소 | MCP client가 stdio child process로 실행 → resource/tool call | 연결·탐색·스키마/도구 검증, MCP client 사용 |
+
+도구 이름과 안전장치 개념을 공유한다고 해서 웹앱이 MCP runtime을 사용했다는 뜻은 아니다. 운영·장애 조사에서는 두 실행 경로의 로그와 프로세스를 구분한다.
+
+---
+
+## 5. HTTP API
+
+두 프로필 모두 아래 12개를 같은 URI와 계약으로 제공한다.
+
+| No. | Method | URI | 목적 |
+|---:|:---:|---|---|
+| 1 | POST | `/api/chat` | LLM·Dataverse 도구 루프, SSE 응답 |
+| 2 | GET | `/api/projects` | 프로젝트 요약 목록 |
+| 3 | POST | `/api/projects` | 프로젝트 생성 |
+| 4 | GET | `/api/projects/{project_id}` | 프로젝트 상세(history 제외) |
+| 5 | PATCH | `/api/projects/{project_id}` | 이름·테이블·지침·셀 수정 |
+| 6 | DELETE | `/api/projects/{project_id}` | 프로젝트 즉시 삭제 |
+| 7 | GET | `/api/tables` | 등록 테이블 카탈로그 |
+| 8 | POST | `/api/schemas/refresh` | 기존 카탈로그의 메타데이터 갱신 |
+| 9 | GET | `/api/describe?table=...` | 스키마 조회·캐시 |
+| 10 | GET | `/api/logs?n=...` | 활성 프로필 최신 로그 |
+| 11 | GET | `/api/health` | 앱·LLM·Dataverse 설정·동시성 상태 |
+| 12 | GET | `/api/instructions/draft` | 활성 로그 기반 지침 후보 생성 |
+
+### 5.1 채팅 SSE 이벤트
+
+| 이벤트 | 필드 | 의미 |
+|---|---|---|
+| `text` | `text` | 최종 사용자 답변 텍스트 |
+| `tool` | `name` | 모델이 도구 호출을 시작함 |
+| `query` | `tool`, `input` | 앱 서버가 실행하려는 도구와 입력 |
+| `error` | `message` | 스트림 시작 후 실패 |
+| `done` | 없음 | 정상 완료 |
+
+### 5.2 주요 HTTP 상태
+
+| 상태 | 조건 |
+|---:|---|
+| 400 | 채팅의 `message` 또는 `sessionId` 누락, describe의 `table` 누락 |
+| 401 | `API_KEY`를 켠 상태에서 키 누락·불일치 |
+| 404 | 프로젝트가 없거나 ID가 유효하지 않음, 미등록 `/api/*` 경로 |
+| 413 | mutation JSON body가 기본 1 MiB 상한을 초과함 |
+| 415 | mutation 요청의 Content-Type이 JSON 계열이 아님 |
+| 422 | FastAPI typed query/path validation 실패 |
+| 429 | IP 레이트리밋 또는 채팅 동시성 과부하 |
+| 500 | 파일·Dataverse·내부 처리 오류 |
+| 503 | 선택한 LLM 설정 미완료, 프론트 빌드 없음 |
+
+---
+
+## 6. 데이터와 백업
+
+### 6.1 프로젝트 파일
+
+`data/projects/<id>.json`은 다음을 함께 가진다.
+
+```json
+{
+  "id": "uuid",
+  "name": "영업 분석",
+  "tables": ["account", "opportunity"],
+  "instructions": { "joins": [], "terms": [], "examples": [] },
+  "cells": [],
+  "history": [],
+  "createdAt": "ISO-8601",
+  "updatedAt": "ISO-8601"
+}
+```
+
+프로젝트 API는 `history`를 응답에서 제거하지만 파일에는 CRM 조회 결과가 포함된 tool result가 저장될 수 있다. 셀 답변에도 CRM 값이 남을 수 있다.
+
+### 6.2 스키마 파일
+
+`data/schema.json`은 앱이 알고 있는 테이블 카탈로그다. 전체 갱신은 이미 등록된 키만 새로 조회하며 새 clone에서 전체 테이블을 자동 발견하지 않는다.
+
+### 6.3 로그
+
+| 프로필 | 활성 파일 | 내용 |
+|---|---|---|
+| Cloud | `logs/server.cloud.log` | JSON Lines 구조화 로그 |
+| Local | `logs/server.local.log` | 같은 형식의 JSON Lines 구조화 로그 |
+
+회전 조건은 1일 또는 50MB이며 `LOG_MAX_FILES` 기본 30개, 회전본 gzip 압축이다. 질문·답변 일부, 도구 입력, 오류가 포함될 수 있으므로 민감 데이터로 취급한다. 과거 `logs/app.log` 등은 마이그레이션 전 이력이며 현행 `/api/logs`가 읽는 활성 파일이 아니다.
+
+### 6.4 반드시 백업할 항목
+
+| 우선순위 | 항목 | 이유 |
+|:---:|---|---|
+| P0 | `.env` 또는 비밀 저장소의 값 | LLM·Dataverse 연결 복구. 평문 백업 접근 제한 필요 |
+| P0 | `data/schema.json` | 카탈로그와 엔티티 집합명. Git에 없음 |
+| P0 | `data/projects/` | 지침·셀·canonical history. Git에 없음 |
+| P1 | `logs/server.*.log` 및 회전본 | 감사·장애 분석. 업무/CRM 데이터 포함 가능 |
+| P1 | 정확한 소스 revision과 lockfile | 앱 코드·의존성 재현 |
+
+백업 전 앱 쓰기를 중지하거나 일관된 스냅샷을 사용한다. 복구 후 `npm run build`, `/api/health`, 프로젝트 조회, 대표 읽기 질문을 확인한다.
+
+---
+
+## 7. 환경변수
+
+### 7.1 프로필 선택
+
+| 변수 | Cloud | Local | 설명 |
+|---|---|---|---|
+| `LLM_PROVIDER` | `anthropic` | `ollama` | 허용값은 두 개뿐. 미설정 기본은 `anthropic`; 운영에서는 명시 |
+| `LLM_MODEL` | Claude 모델 | Ollama 모델 | 공통 모델 override |
+| `LLM_BASE_URL` | Anthropic endpoint | Ollama endpoint | 공통 base URL override |
+| 제공자 키 | `ANTHROPIC_API_KEY` 필수 | 없음 | Ollama native adapter는 `LOCAL_LLM_API_KEY`를 사용하지 않음 |
+| 로그 | 자동 Cloud 파일 | 자동 Local 파일 | `LLM_PROVIDER`에서 파생 |
+
+공통 override가 없으면 Anthropic은 `ANTHROPIC_MODEL`, `ANTHROPIC_BASE_URL`, Ollama는 `LOCAL_LLM_MODEL`, `LOCAL_LLM_BASE_URL`을 사용한다.
+
+### 7.2 공통 주요 변수
+
+| 변수 | 기본값 | 의미 |
+|---|---:|---|
+| `PORT` | `3000` | FastAPI/Uvicorn 앱 포트 |
+| `VITE_API_PROXY_TARGET` | `http://localhost:${PORT}` | Vite 개발 프록시 override |
+| `CHAT_TIMEOUT_MS` | `120000` | LLM 요청 제한 시간 |
+| `DESCRIBE_TIMEOUT_MS` | `60000` | Dataverse 요청 제한 시간 |
+| `MAX_CONCURRENT_API` | `10` | 동시 채팅 처리 상한 |
+| `MAX_SESSIONS` | `200` | 메모리 history 세션 상한 |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | 채팅·describe IP 제한 창 |
+| `RATE_LIMIT_MAX` | `20` | 창당 요청 수 |
+| `LOG_MAX_FILES` | `30` | 회전 로그 보존 개수 |
+| `API_KEY` | 빈 값 | 모든 `/api/*`에 적용하는 선택 공유 키 |
+
+Dataverse 필수값은 `DATAVERSE_TENANT_ID`, `DATAVERSE_CLIENT_ID`, `DATAVERSE_CLIENT_SECRET`, `DATAVERSE_URL`이다.
+
+> `API_KEY` 주의: 서버는 `X-API-Key` 또는 `api_key`를 검사하지만 현재 SPA는 키를 보내지 않는다. 별도 인증 프록시가 안전하게 헤더를 주입하지 않는 상태에서 활성화하면 브라우저 API가 401로 중단된다. Query string 키는 로그·브라우저 기록 유출 위험 때문에 권장하지 않는다.
+
+---
+
+## 8. 설치·실행·검증
+
+두 프로필의 실행 명령은 같고 `.env`만 다르다.
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+npm install
+npm run type-check
+npm test
+npm run build
+npm start
+```
+
+개발 모드는 다음과 같다.
+
+```powershell
+npm run dev
+```
+
+Vite는 기본 5173, FastAPI/Uvicorn은 `PORT`를 사용하며 프록시는 `VITE_API_PROXY_TARGET` 또는 같은 `PORT`로 계산된다. `npm run build`는 SPA `dist/`만 만들고 Python 백엔드는 별도 빌드 산출물이 없다.
+
+2026-08-13 자동 검증은 `npm run type-check`, `npm test` 43/43, `npm run build`, Python 컴파일을 통과했다. 현행 FastAPI의 Local Ollama(`qwen3:8b`) 프로필도 canonical checkout과 Local mirror checkout 각각에서 Dataverse REST 읽기 전용 `$top=0` 라이브 E2E를 통과했다. 두 실행 모두 health/schema, 프로젝트 지침, describe 1회, query 2회, SSE done 1/error 0, marker와 cleanup을 확인했으며 CRM 행은 LLM에 보내지 않았다. Anthropic live는 내부 스키마 외부 전송 위험 때문에 안전 심사에서 차단해 실행하지 않았으며 adapter mock 계약 테스트만 통과했다.
+
+### 8.1 프로필별 사전조건
+
+| 프로필 | 필수 확인 |
+|---|---|
+| Cloud | `LLM_PROVIDER=anthropic`, 유효한 Anthropic 키·모델, 외부 전송 승인, outbound HTTPS |
+| Local | `LLM_PROVIDER=ollama`, Ollama 실행, 모델 설치, `/api/tags` 접근, CPU/RAM/VRAM 용량 |
+| 공통 | Dataverse 서비스 주체·URL, `data/schema.json`, `data/projects/` 복구, 앱 포트 접근 통제 |
+
+### 8.2 시작 후 확인
+
+1. `GET /api/health`에서 `chat.provider`, `chat.model`, `chat.health.status`, `chat.enabled`를 확인한다.
+2. `GET /api/tables`에서 카탈로그가 비어 있지 않은지 확인한다.
+3. 프로젝트 목록과 기존 셀이 복원되는지 확인한다.
+4. `dataverse_describe_table`이 필요한 질문과 실제 행 조회 질문을 각각 실행한다.
+5. Cloud는 `server.cloud.log`, Local은 `server.local.log`에 기록되는지 확인한다.
+6. 지침 초안이 현재 프로필 로그만 읽고 자동 저장하지 않는지 확인한다.
+
+---
+
+## 9. 보안·권한
+
+> **P0 미완료 운영 조치:** 작업 과정에서 출력에 노출됐던 기존 Anthropic API 키를 다음 Anthropic 실행 전에 폐기하고 새 키로 교체한다. 실제 키 값은 소스·문서·노션에 남기지 않는다.
+
+### 9.1 현재 모델
+
+| 주체 | 현재 권한 |
+|---|---|
+| 앱 포트에 도달한 접속자 (`API_KEY` 없음) | 모든 프로젝트·스키마·로그·채팅 API 사용 가능 |
+| 공유 키 보유자 (`API_KEY` 있음) | 모든 API 사용 가능. 기능·프로젝트별 차등 없음 |
+| 앱 서버 | 로컬 파일 읽기/쓰기, Dataverse 서비스 주체로 GET |
+| LLM | 질문·카탈로그·도구 결과를 받고 도구 호출을 제안. 자격증명과 직접 Dataverse 접속권은 없음 |
+| Dataverse 서비스 주체 | 실제 권한은 Dataverse 보안 역할에 따름. 앱 코드는 GET만 호출 |
+
+테이블 범위, 프로젝트 API의 history 비노출, “CRM 쓰기 도구 없음”은 유용한 방어지만 사용자 인증·인가를 대신하지 않는다. 서비스 주체 자체에는 최소 읽기 권한만 부여해야 한다.
+
+### 9.2 외부 공개 전 P0
+
+- SSO 또는 사용자 인증과 RBAC·프로젝트 소유권 구현
+- 로그·프로젝트 API의 역할 분리와 감사 이벤트 정의
+- SPA와 인증 토큰의 안전한 연동
+- TLS·reverse proxy·허용 네트워크·요청 크기·CORS 정책 확정
+- 프로젝트·로그의 보존 기간, 삭제, 암호화, 백업 접근 정책 확정
+- Dataverse 서비스 주체의 최소 권한 검증
+- Cloud 프로필의 데이터 분류와 Anthropic 전송 승인
+
+---
+
+## 10. 알려진 제약
+
+### P0 — 운영 범위 제한
+
+1. 사용자 계정·RBAC·프로젝트 소유권이 없다.
+2. `API_KEY`는 하나의 공유 비밀일 뿐이며 현 SPA가 직접 보내지 않는다.
+3. 셀·history·로그에 CRM 값과 질문이 평문으로 남을 수 있다.
+4. Cloud 프롬프트·스키마·도구 결과는 외부 Anthropic 서비스로 전달될 수 있다.
+
+### P1 — 안정성
+
+1. 프로젝트·스키마 JSON은 임시 파일을 `fsync`한 뒤 원자적으로 교체하지만, 프로세스 간 공유 락·DB 트랜잭션·자동 백업은 없다.
+2. 다중 앱 인스턴스는 파일과 메모리 세션을 안전하게 공유하지 못한다.
+3. 프로젝트 삭제는 즉시 파일 삭제이며 휴지통·버전 이력이 없다.
+4. 전체 스키마 갱신은 기존 카탈로그 키만 처리하고 새 테이블을 발견하지 않는다.
+5. 명시된 최상위 `$top`은 100으로 제한하지만 `$expand` 내부 관계 깊이·행수는 완전한 OData parser 수준으로 통제하지 않는다. 대신 Dataverse 응답과 LLM 도구 결과에 별도 바이트 상한을 적용한다.
+6. 로그 초안은 단순 휴리스틱이며 잘못된 용어·답변을 만들 수 있어 반드시 사람 검토가 필요하다.
+
+### P2 — 유지보수
+
+1. 레거시 디렉터리가 남으면 현행 구현으로 오해할 수 있다.
+2. Local mirror는 자동 동기화되지 않으므로 revision 확인 없이 운영하면 코드가 드리프트할 수 있다.
+3. 자동 테스트 43개는 provider, 실제 FastAPI SSE 도구 루프, 동시성·rollback, 프로젝트·history 비노출, OData/Dataverse 경계, 파일·로그 내구성과 API 계약을 다루지만 UI·Anthropic 실환경 회귀를 모두 보장하지 않는다.
+4. 앱 LICENSE·운영 책임자·SLA는 저장소에서 확정되지 않았다.
+
+---
+
+## 11. 장애 대응
+
+| 증상 | 우선 확인 |
+|---|---|
+| `/api/chat` 503 | `LLM_PROVIDER`, Anthropic 키, provider `configured` |
+| health는 200이나 chat 비활성 | `chat.health.status`, `missingEnv`, 모델/endpoint |
+| Cloud LLM 실패 | outbound HTTPS, 키·모델 접근권, `/v1/models`, 제한·할당량 |
+| Local LLM 실패 | Ollama 프로세스, `/api/tags`, 모델 설치, RAM/VRAM, timeout |
+| 테이블 0개 | `data/schema.json` 존재·JSON 유효성·복구 여부 |
+| 허용 엔티티 집합 없음 | 프로젝트 tables와 schema의 `entitySetName` 확인 |
+| Dataverse 401 | tenant/client/secret/URL, 앱 등록·보안 역할, 토큰 재발급 |
+| API 전체 401 | `API_KEY` 설정과 SPA 헤더 미지원 여부 |
+| 프로젝트/셀 유실 | `data/projects/` 경로·권한·백업 확인 |
+| 로그가 안 보임 | 프로필에 맞는 `server.cloud.log`/`server.local.log`와 파일 권한 확인 |
+
+---
+
+## 12. 최종 인수 체크리스트
+
+- [x] 활성 `src/`, `backend/`와 실행 스크립트가 환경 간 동일한지 확인했다.
+- [ ] 각 환경의 `.env`에서 올바른 `LLM_PROVIDER`와 모델·endpoint를 설정했다.
+- [x] type-check, Python test 43/43, SPA build, Python compile을 통과했다.
+- [x] 두 checkout의 Local Ollama 환경에서 FastAPI `/api/chat` 안전 라이브 E2E를 각각 통과했다.
+- [ ] Anthropic 실환경 E2E는 데이터 외부 전송 승인 후에만 수행한다(현재 adapter 계약 테스트만 통과).
+- [ ] `/api/health`가 올바른 provider와 실제 dependency 상태를 표시한다.
+- [x] 공통 코드·자동 테스트로 12개 API와 SSE 이벤트가 두 프로필에서 같은 계약임을 확인했다.
+- [x] 자동 tool-loop 테스트와 Local E2E로 프로젝트의 tables/instructions가 서버 권위로 적용됨을 확인했다.
+- [ ] 기존 history가 canonical 형식으로 이어지고 성공 저장 후 마이그레이션됨을 확인했다.
+- [x] 활성 로그 파일이 프로필별 하나로 분리됨을 확인했다.
+- [ ] `.env`, `data/schema.json`, `data/projects/`, 필요한 로그를 별도 백업했다.
+- [ ] RBAC 없음, API key/SPA 제약, 데이터 평문 저장을 운영 승인자에게 전달했다.
+- [ ] Cloud 외부 전송 또는 Local Ollama 호스트 경계를 승인했다.
+- [ ] 노출된 기존 Anthropic API 키를 폐기하고 새 키로 교체했다.
+- [x] `defineview/`, `data/`, `logs/`, `.env`가 Git 제외 상태임을 확인했다.
+
+---
+
+## 13. 상세 정의서 8종과 검증 시나리오
+
+| No. | 문서 | 링크 | 주요 내용 |
+|---:|---|---|---|
+| 01 | 화면정의서 | [`specifications/01_화면정의서.md`](specifications/01_화면정의서.md) | Screen ID, 와이어프레임, 항목별 검수 |
+| 02 | 화면설계서 | [`specifications/02_화면설계서.md`](specifications/02_화면설계서.md) | 상태·컴포넌트·상호작용 설계 |
+| 03 | 메뉴정의서 | [`specifications/03_메뉴정의서.md`](specifications/03_메뉴정의서.md) | GNB/LNB/Content 메뉴와 노출 규칙 |
+| 04 | 플로우차트 | [`specifications/04_플로우차트.md`](specifications/04_플로우차트.md) | 질문·도구·프로젝트·스키마·오류 흐름 |
+| 05 | 정책정의서 | [`specifications/05_정책정의서.md`](specifications/05_정책정의서.md) | 현행 정책, 운영 결정, 위험 정책 |
+| 06 | 권한정의서 | [`specifications/06_권한정의서.md`](specifications/06_권한정의서.md) | 현재 무-RBAC 권한과 목표 모델 |
+| 07 | 인프라 아키텍처 | [`specifications/07_인프라아키텍처정의서.md`](specifications/07_인프라아키텍처정의서.md) | 공통 런타임, 프로필 경계, 네트워크·백업 |
+| 08 | API정의서 | [`specifications/08_API정의서.md`](specifications/08_API정의서.md) | 공통 12개 API, SSE, 오류·보안 계약 |
+| 09 | 종단간 검증 시나리오 | [`specifications/09_종단간검증시나리오.md`](specifications/09_종단간검증시나리오.md) | MCP·REST·schema·Text-to-OData·지침의 재현 절차와 실측 증거 |
+
+---
+
+## 14. 변경 이력
+
+| 버전 | 날짜 | 상태 | 변경 내용 |
+|---|---|---|---|
+| `1.0` | 2026-08-12 | Superseded | Python Cloud와 Express Local이 분리돼 있던 종료 조사 문서 |
+| `2.0` | 2026-08-12 | Superseded | 공통 React/Express 런타임을 기준으로 작성했던 이전 문서 |
+| `3.0` | 2026-08-13 | Final | 활성 백엔드를 Python/FastAPI로 확정하고 모듈·실행·빌드·검증·MCP 경계를 현행 코드 기준으로 갱신 |
+
+최종 원칙은 간단하다. **canonical 제품 코드는 하나, 배포 프로필은 둘이며 Local 저장소는 mirror다.** 이후 변경은 canonical에서 수행하고 provider 설정을 제외한 같은 revision을 mirror에 반영한다.

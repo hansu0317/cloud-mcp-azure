@@ -1,0 +1,186 @@
+"""프로젝트 파일 저장소의 보안·API 노출 계약 테스트.
+
+외부 서비스와 실제 프로젝트 파일은 사용하지 않는다. Git에서 제외된
+``data/.python-tests/<uuid>``에 격리하고 종료 시 정리한다. 표준 라이브러리
+``unittest``만 사용하므로 별도 테스트 러너 의존성도 필요 없다.
+"""
+
+from __future__ import annotations
+
+import shutil
+import json
+import unittest
+import uuid
+from pathlib import Path
+from unittest.mock import patch
+
+from backend import projects
+
+
+class ProjectStoreContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Windows의 제한된 실행 환경에서도 tempfile의 ACL 영향을 받지 않도록
+        # 프로젝트의 git-ignore된 data/ 아래에 테스트 전용 UUID 디렉터리를 쓴다.
+        self.root = Path.cwd() / "data" / ".python-tests" / str(uuid.uuid4())
+        self.projects_dir = self.root / "data" / "projects"
+        self.projects_dir.mkdir(parents=True)
+
+        self._patches = [
+            patch.object(projects, "PROJECTS_DIR", self.projects_dir),
+            patch.object(
+                projects,
+                "_LEGACY_GLOBAL_INST_FILE",
+                self.root / "data" / "instructions.json",
+            ),
+            patch.object(projects.log, "info"),
+            patch.object(projects.log, "error"),
+        ]
+        for item in self._patches:
+            item.start()
+
+    def tearDown(self) -> None:
+        for item in reversed(self._patches):
+            item.stop()
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_project_lifecycle_keeps_history_private(self) -> None:
+        created = projects.create_project("  영업 현황  ", ["account"])
+        project_id = created["id"]
+
+        self.assertEqual(created["name"], "영업 현황")
+        self.assertEqual(created["tables"], ["account"])
+        self.assertNotIn("history", created)
+        self.assertTrue(projects.project_exists(project_id))
+
+        instructions = {
+            "joins": [{"from": "account", "to": "contact"}],
+            "terms": [{"term": "고객", "table": "account"}],
+            "examples": [{"question": "고객 수", "answer": "집계합니다."}],
+        }
+        updated = projects.update_project(
+            project_id,
+            instructions=instructions,
+            cells=[{"id": "cell-1", "question": "고객 수"}],
+        )
+        self.assertIsNotNone(updated)
+        self.assertNotIn("history", updated or {})
+        self.assertEqual(projects.get_project_instructions(project_id), instructions)
+
+        history = [{"role": "user", "content": [{"type": "text", "text": "질문"}]}]
+        self.assertTrue(projects.save_project_history(project_id, history))
+        self.assertEqual(projects.get_project_history(project_id), history)
+
+        detail = projects.get_project(project_id)
+        self.assertIsNotNone(detail)
+        self.assertNotIn("history", detail or {})
+        self.assertNotIn("history", projects.list_projects()[0])
+
+        self.assertTrue(projects.delete_project(project_id))
+        self.assertFalse(projects.project_exists(project_id))
+        self.assertFalse(projects.delete_project(project_id))
+
+    def test_history_save_never_creates_an_unknown_project(self) -> None:
+        unknown_id = "11111111-1111-1111-1111-111111111111"
+
+        self.assertFalse(projects.project_exists(unknown_id))
+        self.assertFalse(projects.save_project_history(unknown_id, [{"role": "user"}]))
+        self.assertFalse((self.projects_dir / f"{unknown_id}.json").exists())
+        self.assertEqual(projects.list_projects(), [])
+
+    def test_invalid_ids_cannot_escape_the_projects_directory(self) -> None:
+        outside = self.root / "escape.json"
+        invalid_ids = (
+            "../escape",
+            "..\\escape",
+            "folder/project",
+            "folder\\project",
+            "",
+            ".",
+            "한글-id",
+        )
+
+        for project_id in invalid_ids:
+            with self.subTest(project_id=project_id):
+                self.assertFalse(projects.project_exists(project_id))
+                self.assertIsNone(projects.get_project(project_id))
+                self.assertFalse(projects.save_project_history(project_id, []))
+                self.assertFalse(projects.delete_project(project_id))
+
+        self.assertFalse(outside.exists())
+        self.assertEqual(list(self.projects_dir.glob("*.json")), [])
+
+    def test_malformed_project_files_are_skipped_without_breaking_list(self) -> None:
+        valid = projects.create_project("정상 프로젝트", ["account"])
+        malformed = {
+            "bad-root": [],
+            "missing-required": {"id": "missing-required", "name": "누락"},
+            "wrong-id": {
+                "id": "different-id",
+                "name": "불일치",
+                "tables": [],
+                "createdAt": "2026-08-13T00:00:00+09:00",
+                "updatedAt": "2026-08-13T00:00:00+09:00",
+            },
+            "bad-tables": {
+                "id": "bad-tables",
+                "name": "잘못된 테이블",
+                "tables": [123],
+                "createdAt": "2026-08-13T00:00:00+09:00",
+                "updatedAt": "2026-08-13T00:00:00+09:00",
+            },
+        }
+        for project_id, payload in malformed.items():
+            (self.projects_dir / f"{project_id}.json").write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+            )
+        (self.projects_dir / "invalid-json.json").write_text("{", encoding="utf-8")
+
+        listed = projects.list_projects()
+
+        self.assertEqual([item["id"] for item in listed], [valid["id"]])
+        for project_id in malformed:
+            self.assertIsNone(projects.get_project(project_id))
+        self.assertIsNone(projects.get_project("invalid-json"))
+
+    def test_writes_are_atomic_and_leave_original_on_replace_failure(self) -> None:
+        created = projects.create_project("원본", ["account"])
+        target = self.projects_dir / f"{created['id']}.json"
+        original = target.read_bytes()
+
+        with patch.object(projects.os, "replace", side_effect=OSError("replace failed")):
+            with self.assertRaises(OSError):
+                projects.update_project(created["id"], name="변경본")
+
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(list(self.projects_dir.glob("*.tmp")), [])
+        self.assertEqual(projects.get_project(created["id"])["name"], "원본")
+
+    def test_inputs_and_return_values_are_deep_copied(self) -> None:
+        tables = ["account"]
+        created = projects.create_project("복사 안전성", tables)
+        project_id = created["id"]
+        tables.append("contact")
+        created["tables"].append("lead")
+        self.assertEqual(projects.get_project_tables(project_id), ["account"])
+
+        instructions = {
+            "joins": [{"from": "account", "to": "contact"}],
+            "terms": [],
+            "examples": [],
+        }
+        updated = projects.update_project(project_id, instructions=instructions)
+        instructions["joins"][0]["from"] = "mutated-input"
+        assert updated is not None
+        updated["instructions"]["joins"][0]["from"] = "mutated-output"
+        self.assertEqual(projects.get_project_instructions(project_id)["joins"][0]["from"], "account")
+
+        history = [{"role": "user", "content": [{"type": "text", "text": "원본"}]}]
+        self.assertTrue(projects.save_project_history(project_id, history))
+        history[0]["content"][0]["text"] = "변경"
+        returned = projects.get_project_history(project_id)
+        returned[0]["content"][0]["text"] = "반환값 변경"
+        self.assertEqual(projects.get_project_history(project_id)[0]["content"][0]["text"], "원본")
+
+
+if __name__ == "__main__":
+    unittest.main()
