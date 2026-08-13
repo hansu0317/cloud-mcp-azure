@@ -18,6 +18,7 @@ Anthropic 또는 Ollama를 선택합니다.
 | `dataverse.py` | Entra client credentials, Dataverse GET, metadata→schema |
 | `projects.py` | `data/projects/*.json` 저장·ID 검증·history 비노출 |
 | `logger.py` | `server.cloud.log` / `server.local.log` JSON Lines |
+| `mcp_server.py` | Claude Desktop/Code 등 외부 MCP client용 Dataverse MCP 서버(별도 프로세스, `chat_api.py`와 같은 guard 함수 재사용) |
 
 ## 채팅 계약
 
@@ -58,3 +59,13 @@ python -m compileall -q backend
 
 `npm start`는 `python -m backend.main`을 실행합니다. Python 백엔드는 별도 빌드 산출물이
 없고, `npm run build`는 React SPA의 `dist/`만 생성합니다.
+
+## MCP 서버 (외부 client용, 웹앱과 별도 프로세스)
+
+```powershell
+npm run mcp        # stdio — Claude Desktop/Code 등록용
+npm run mcp:http    # streamable-http — 원격 MCP client용
+```
+
+`main.py`(웹앱)는 기동 시 이 모듈을 import하지 않습니다. 자세한 등록 방법은
+[../README.md](../README.md#mcp와-웹앱-rest-경로의-관계)를 참고하세요.

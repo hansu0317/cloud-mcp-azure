@@ -3,3 +3,6 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 httpx>=0.27.0
 python-dotenv>=1.0.1
+# backend/mcp_server.py — Claude Desktop/Code 등 MCP client용 stdio/streamable-http 서버.
+# 웹앱 FastAPI 프로세스(backend/main.py)는 기동 시 이 패키지를 쓰지 않는다.
+mcp>=2.0.0

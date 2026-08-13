@@ -71,9 +71,37 @@ CRM 생성·수정·삭제 도구는 없습니다. `dataverse_query`는 프로�
 
 ### MCP와 웹앱 REST 경로의 관계
 
-`C:\Users\hansu\projects\crm-ai-chat-dataverse-mcp`는 `dataverse://catalog`와 같은 이름의 두 도구를 제공하는 별도 stdio MCP 서버입니다. 웹앱은 이 MCP 프로세스를 직접 호출하지 않고, FastAPI의 `backend/chat_api.py`에서 같은 두 도구 계약을 실행한 뒤 `backend/dataverse.py`로 Dataverse REST/OData GET을 호출합니다. 따라서 과거 앱 로그는 **웹앱 내부 도구 사용 증거**이고 MCP 전송 사용 증거는 아닙니다.
+웹앱(React + FastAPI)이 채팅에서 CRM을 조회할 때는 MCP를 거치지 않습니다. `backend/chat_api.py`가 Anthropic/Ollama의 네이티브 tool-use로 `dataverse_describe_table`/`dataverse_query`를 직접 실행하고, `backend/dataverse.py`로 Dataverse REST/OData GET을 호출합니다. 프로세스 하나, 왕복 하나로 끝나는 이 경로가 지금도 실제로 쓰이는 경로입니다.
 
-개발 종료 검증에서는 별도 MCP도 실제 MCP SDK 클라이언트로 확인했습니다. `initialize → catalog resource → tools/list → describe → query` 왕복과 allowlist 거부가 통과했으며, live query는 1행 반환을 확인하되 CRM 원문은 기록하지 않았습니다. 세 저장소의 `schema.json`은 36개 테이블 기준으로 갱신시각을 제외한 의미 내용이 같았고, 표본 테이블의 저장 컬럼 110개가 실제 Dataverse 메타데이터 110개와 일치했습니다.
+**MCP는 이 웹앱 밖에서 같은 CRM 도구를 쓰고 싶은 외부 클라이언트(Claude Desktop, Claude Code 등)를 위한 별도 진입점**으로 `backend/mcp_server.py`에 있습니다(2026-08-13부터 별도 저장소가 아니라 이 프로젝트 안에 Python으로 통합 — 과거 Node/TS `crm-ai-chat-dataverse-mcp` 저장소는 더 이상 쓰지 않습니다). 새 가드 로직을 따로 짜지 않고 `chat_api.py`가 쓰는 것과 **같은** 화이트리스트·`$top` 상한·8 KiB 응답 상한 함수를 그대로 불러와 쓰므로, 웹앱과 MCP 경로의 안전장치가 서로 갈라질 수 없습니다. 웹앱 FastAPI 프로세스는 이 MCP 서버를 실행하거나 호출하지 않습니다 — MCP client(Claude Desktop 등)가 필요할 때 별도 프로세스로 직접 띄웁니다.
+
+```powershell
+# Claude Desktop/Code 같은 stdio MCP client에 등록해 쓸 때
+npm run mcp
+# 또는
+python -m backend.mcp_server
+
+# 원격 HTTP MCP client(streamable-http)에서 쓸 때
+npm run mcp:http
+```
+
+Claude Desktop에 등록하려면 `claude_desktop_config.json`(Store 버전은 `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude_desktop_config.json`)에 다음을 추가합니다(Claude Desktop을 완전히 종료한 뒤 편집):
+
+```json
+{
+  "mcpServers": {
+    "dataverse": {
+      "command": "C:\\Users\\hansu\\projects\\crm-ai-chat\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "backend.mcp_server"],
+      "cwd": "C:\\Users\\hansu\\projects\\crm-ai-chat"
+    }
+  }
+}
+```
+
+MCP client는 프로젝트 스코프 없이 `schema.json`에 등록된 전체 카탈로그를 볼 수 있습니다(읽기 전용, 화이트리스트 밖 엔티티는 여전히 거부).
+
+과거(2026-08-13 이전) 개발 종료 검증에서는 그때 별도 저장소였던 Node/TS MCP도 실제 MCP SDK 클라이언트로 확인했습니다. `initialize → catalog resource → tools/list → describe → query` 왕복과 allowlist 거부가 통과했으며, live query는 1행 반환을 확인하되 CRM 원문은 기록하지 않았습니다. 세 저장소의 `schema.json`은 36개 테이블 기준으로 갱신시각을 제외한 의미 내용이 같았고, 표본 테이블의 저장 컬럼 110개가 실제 Dataverse 메타데이터 110개와 일치했습니다. 지금의 Python `backend/mcp_server.py`는 같은 계약(`initialize → catalog → describe → query`, allowlist 거부)을 `tests_python/test_mcp_server.py`와 stdio 클라이언트 smoke test로 다시 확인했습니다.
 
 이 앱이 하는 일은 SQL 생성·실행이 아니라 **자연어 → 도구 선택 → OData 상대경로 → Dataverse GET**입니다. 사용자 관점에서 Text-to-SQL 계열로 부를 수는 있지만 기술 문서에서는 `Text-to-OData`로 표기합니다.
 

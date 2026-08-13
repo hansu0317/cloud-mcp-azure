@@ -10,6 +10,8 @@
     "build": "npm run build:client",
     "build:client": "vite build",
     "start": "python -m backend.main",
+    "mcp": "python -m backend.mcp_server",
+    "mcp:http": "python -m backend.mcp_server --http",
     "type-check": "tsc --noEmit",
     "test": "python -m unittest discover -s tests_py -p \"test_*.py\" -v && python -m unittest discover -s tests_python -p \"test_*.py\" -v",
     "test:e2e:safe": "python scripts/e2e_fastapi_safe.py",
