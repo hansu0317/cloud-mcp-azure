@@ -143,6 +143,69 @@ class DataverseRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any(cast_name in path for path, _ in calls))
         self.assertTrue(all(limit == dataverse.METADATA_MAX_RESPONSE_BYTES for _, limit in calls))
 
+    async def test_lookup_columns_fetch_target_entities(self) -> None:
+        attributes = [
+            {"LogicalName": "parentaccountid", "AttributeType": "Lookup", "DisplayName": {}},
+            {"LogicalName": "ownerid", "AttributeType": "Owner", "DisplayName": {}},
+            {"LogicalName": "name", "AttributeType": "String", "DisplayName": {}},
+        ]
+        root_metadata = json.dumps({"EntitySetName": "accounts", "Attributes": attributes})
+        calls: list[str] = []
+
+        async def fake_get(path: str, *, max_bytes: int | None = None) -> str:
+            calls.append(path)
+            if "?$select=EntitySetName" in path:
+                return root_metadata
+            if "parentaccountid" in path:
+                return json.dumps({"Targets": ["account"]})
+            if "ownerid" in path:
+                return json.dumps({"Targets": ["systemuser", "team"]})
+            raise AssertionError(f"unexpected metadata call: {path}")
+
+        with patch.object(dataverse, "dataverse_get", side_effect=fake_get):
+            result = await dataverse.fetch_entity_schema("account")
+
+        self.assertEqual(result.lookups, {"parentaccountid": ["account"], "ownerid": ["systemuser", "team"]})
+        self.assertTrue(any("LookupAttributeMetadata" in path and "parentaccountid" in path for path in calls))
+        self.assertTrue(any("LookupAttributeMetadata" in path and "ownerid" in path for path in calls))
+        # 일반 문자열 컬럼(name)은 Lookup 메타데이터를 조회하지 않는다.
+        self.assertFalse(any("LookupAttributeMetadata" in path and "/Attributes(LogicalName='name')" in path for path in calls))
+
+    async def test_known_lookups_skip_redundant_target_fetch(self) -> None:
+        attributes = [
+            {"LogicalName": "parentaccountid", "AttributeType": "Lookup", "DisplayName": {}},
+            {"LogicalName": "ownerid", "AttributeType": "Owner", "DisplayName": {}},
+        ]
+        root_metadata = json.dumps({"EntitySetName": "accounts", "Attributes": attributes})
+        calls: list[str] = []
+
+        async def fake_get(path: str, *, max_bytes: int | None = None) -> str:
+            calls.append(path)
+            if "?$select=EntitySetName" in path:
+                return root_metadata
+            if "ownerid" in path:
+                return json.dumps({"Targets": ["systemuser"]})
+            raise AssertionError(f"should not re-fetch cached lookup: {path}")
+
+        with patch.object(dataverse, "dataverse_get", side_effect=fake_get):
+            result = await dataverse.fetch_entity_schema(
+                "account", known_lookups={"parentaccountid": ["account"]}
+            )
+
+        # 캐시로 넘긴 parentaccountid는 그대로 유지하고, 새 컬럼(ownerid)만 조회한다.
+        self.assertEqual(result.lookups, {"parentaccountid": ["account"], "ownerid": ["systemuser"]})
+        self.assertFalse(any("parentaccountid" in path and "LookupAttributeMetadata" in path for path in calls))
+
+    async def test_known_lookups_for_removed_column_are_dropped(self) -> None:
+        # 컬럼이 더 이상 이 엔티티에 없으면(스키마 변경) 캐시에 남아있던 값도 버린다.
+        attributes = [{"LogicalName": "name", "AttributeType": "String", "DisplayName": {}}]
+        root_metadata = json.dumps({"EntitySetName": "accounts", "Attributes": attributes})
+        with patch.object(dataverse, "dataverse_get", AsyncMock(return_value=root_metadata)):
+            result = await dataverse.fetch_entity_schema(
+                "account", known_lookups={"oldlookup": ["sometable"]}
+            )
+        self.assertEqual(result.lookups, {})
+
     async def test_picklist_option_requests_share_concurrency_limit(self) -> None:
         active = 0
         maximum_active = 0

@@ -212,6 +212,30 @@ _OPTION_METADATA_CASTS = {
     "MultiSelectPicklist": "MultiSelectPicklistAttributeMetadata",
 }
 
+# Lookup/Owner/Customer 컬럼은 모두 "이 컬럼이 다른 엔티티를 가리킨다"는 같은 의미이며
+# LookupAttributeMetadata의 Targets($select)로 대상 엔티티 논리명 목록을 얻는다.
+_LOOKUP_ATTRIBUTE_TYPES = {"Lookup", "Owner", "Customer"}
+
+
+async def _fetch_lookup_targets(logical_name: str, attr_logical_name: str) -> list[str] | None:
+    try:
+        path = (
+            f"EntityDefinitions(LogicalName='{logical_name}')/Attributes(LogicalName='{attr_logical_name}')"
+            "/Microsoft.Dynamics.CRM.LookupAttributeMetadata?$select=Targets"
+        )
+        async with _picklist_semaphore:
+            text = await dataverse_get(path, max_bytes=METADATA_MAX_RESPONSE_BYTES)
+        import json
+
+        meta = json.loads(text)
+        targets = meta.get("Targets")
+        if isinstance(targets, list):
+            names = [t for t in targets if isinstance(t, str)]
+            return names or None
+        return None
+    except Exception:
+        return None  # join 후보는 부가 정보 — 실패해도 전체 갱신은 막지 않음
+
 
 async def _fetch_picklist_options(
     logical_name: str, attr_logical_name: str, attribute_type: str = "Picklist",
@@ -248,9 +272,18 @@ async def _fetch_picklist_options(
 class EntitySchemaResult:
     entity_set_name: str
     markdown: str
+    lookups: dict[str, list[str]]
 
 
-async def fetch_entity_schema(logical_name: str) -> EntitySchemaResult:
+async def fetch_entity_schema(
+    logical_name: str, *, known_lookups: dict[str, list[str]] | None = None
+) -> EntitySchemaResult:
+    """엔티티 스키마 마크다운과 Lookup 컬럼의 대상 엔티티(join 후보용)를 함께 얻는다.
+
+    ``known_lookups``에 이미 있는 컬럼은 Dataverse에 다시 묻지 않는다 — 대상 엔티티는
+    스키마 자체 속성이라 한 번 알면 바뀌지 않으므로, 반복되는 스키마 갱신에서 매번
+    재조회하면 그만큼 느려지기만 한다(호출한 쪽이 schema.json에 캐시된 값을 넘긴다).
+    """
     import json
 
     path = (
@@ -274,6 +307,20 @@ async def fetch_entity_schema(logical_name: str) -> EntitySchemaResult:
     )
     option_map = {a["LogicalName"]: opt for a, opt in zip(picklist_attrs, option_entries)}
 
+    known_lookups = known_lookups or {}
+    lookup_attrs = [a for a in attrs if a.get("AttributeType") in _LOOKUP_ATTRIBUTE_TYPES]
+    lookup_names = {a["LogicalName"] for a in lookup_attrs}
+    to_fetch = [a for a in lookup_attrs if a["LogicalName"] not in known_lookups]
+    fetched_targets = await asyncio.gather(
+        *(_fetch_lookup_targets(logical_name, a["LogicalName"]) for a in to_fetch)
+    )
+    lookup_map: dict[str, list[str]] = {
+        name: targets for name, targets in known_lookups.items() if name in lookup_names
+    }
+    for a, targets in zip(to_fetch, fetched_targets):
+        if targets:
+            lookup_map[a["LogicalName"]] = targets
+
     rows = []
     for a in attrs:
         label = _label_of(a.get("DisplayName"), a["LogicalName"])
@@ -285,7 +332,7 @@ async def fetch_entity_schema(logical_name: str) -> EntitySchemaResult:
 
     markdown = "\n".join(["| 컬럼명 | 타입 | 한국어 설명 |", "|---|---|---|", *rows])
     entity_set_name = meta.get("EntitySetName") or f"{logical_name}s"
-    return EntitySchemaResult(entity_set_name=entity_set_name, markdown=markdown)
+    return EntitySchemaResult(entity_set_name=entity_set_name, markdown=markdown, lookups=lookup_map)
 
 
 # ─── schema.json 공용 타입 + 얇은 카탈로그 (컨텍스트 절약, LLM 진행형 조회용) ──
@@ -299,12 +346,22 @@ class SchemaEntry:
     schema: str | None = None
     updated_at: str | None = None
     entity_set_name: str | None = None
+    lookups: dict[str, list[str]] | None = None
 
     @staticmethod
     def from_dict(d: dict[str, Any]) -> "SchemaEntry":
+        raw_lookups = d.get("lookups")
+        lookups = None
+        if isinstance(raw_lookups, dict):
+            lookups = {
+                str(column): [str(t) for t in targets]
+                for column, targets in raw_lookups.items()
+                if isinstance(targets, list)
+            }
         return SchemaEntry(
             label=d.get("label"), domain=d.get("domain"), schema=d.get("schema"),
             updated_at=d.get("updatedAt"), entity_set_name=d.get("entitySetName"),
+            lookups=lookups,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -319,6 +376,8 @@ class SchemaEntry:
             d["updatedAt"] = self.updated_at
         if self.entity_set_name is not None:
             d["entitySetName"] = self.entity_set_name
+        if self.lookups is not None:
+            d["lookups"] = self.lookups
         return d
 
 

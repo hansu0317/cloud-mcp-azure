@@ -357,15 +357,22 @@ async def describe_table(table: str) -> str:
     if missing:
         raise RuntimeError(f"{missing} 환경변수가 설정되지 않았습니다. (.env 확인)")
 
-    result = await fetch_entity_schema(table)
-
     existing = _read_json_file(SCHEMA_FILE, {})
     if not isinstance(existing, dict):
         raise RuntimeError("schema.json 최상위 값은 JSON 객체여야 합니다.")
     entry = existing.get(table, {})
     if not isinstance(entry, dict):
         raise RuntimeError(f'schema.json의 "{table}" 항목은 JSON 객체여야 합니다.')
+
+    # 이미 알고 있는 Lookup 컬럼의 대상 엔티티는 스키마 자체 속성이라 바뀌지 않는다 —
+    # 캐시된 값을 넘겨서 매 갱신마다 같은 컬럼을 다시 조회하지 않게 한다.
+    known_lookups = entry.get("lookups")
+    known_lookups = known_lookups if isinstance(known_lookups, dict) else None
+    result = await fetch_entity_schema(table, known_lookups=known_lookups)
+
     entry.update({"schema": result.markdown, "entitySetName": result.entity_set_name, "updatedAt": _now_iso()})
+    if result.lookups:
+        entry["lookups"] = result.lookups
     existing[table] = entry
     _atomic_write_json(SCHEMA_FILE, existing)
     # 파일 영속화가 성공한 뒤에만 메모리 캐시를 갱신한다.
@@ -521,12 +528,17 @@ async def describe_route(table: str | None = None):
 # 은 마이그레이션 원본으로만 한 번 쓰이고 이후 무시됨). 초안 생성(로그 마이닝)만
 # 프로젝트에 묶이지 않는 전역 기능이라 그대로 둔다.
 #
-# 실제 질문/답변 로그에서 terms·examples 후보를 뽑아 초안으로 반환한다(저장은 안 함 —
-# 프론트가 InstructionsModal에 미리 채워 보여주고 사람이 검토 후 /api/instructions로
-# 저장). joins는 항상 빈 배열 — backend/instructions_draft.py 모듈 docstring 참고.
+# 실제 질문/답변 로그에서 terms·examples 후보를 뽑고, joins는 schema.json에 캐시된
+# Lookup 대상 엔티티(describe_table이 채움)에서 카탈로그에 등록된 테이블끼리만 후보를
+# 만든다 — 여기서는 Dataverse를 다시 호출하지 않고 이미 있는 파일만 읽는다(저장은
+# 안 함 — 프론트가 InstructionsModal에 미리 채워 보여주고 사람이 검토 후
+# /api/instructions로 저장).
 @app.get("/api/instructions/draft")
 async def get_instructions_draft():
-    return build_instructions_draft()
+    schema_data = _read_json_file(SCHEMA_FILE, {})
+    if not isinstance(schema_data, dict):
+        schema_data = {}
+    return build_instructions_draft(schema_data)
 
 
 # ─── API: 로그 조회 ───────────────────────────────────────────────────────────

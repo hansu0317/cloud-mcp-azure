@@ -1,16 +1,18 @@
-"""프로필 서버 로그의 실제 사용 이력에서 지침 초안 후보를 뽑는다.
+"""프로필 서버 로그와 schema.json 캐시에서 지침 초안 후보를 뽑는다.
 
 GET /api/instructions/draft (backend/main.py)가 이 모듈을 호출한다. 사람이 매번 빈
-화면에서부터 조인/용어/예시를 타이핑하는 대신, 이미 실제로 오간 질문·답변에서
-후보를 자동으로 채워 InstructionsModal에 미리 보여주고 사람은 검토·수정·삭제만
-하도록 하는 게 목적이다 — 완전 자동 저장은 하지 않는다(틀린 지침이 잘못된 답변을
-계속 재생산할 수 있어서, 최종 승인은 항상 사람이 함).
+화면에서부터 조인/용어/예시를 타이핑하는 대신, 이미 실제로 오간 질문·답변과 이미
+조회해둔 스키마에서 후보를 자동으로 채워 InstructionsModal에 미리 보여주고 사람은
+검토·수정·삭제만 하도록 하는 게 목적이다 — 완전 자동 저장은 하지 않는다(틀린 지침이
+잘못된 답변을 계속 재생산할 수 있어서, 최종 승인은 항상 사람이 함).
 
-joins(조인 관계)는 의도적으로 항상 빈 배열을 반환한다: Lookup 컬럼이 실제로 어느
-테이블을 가리키는지(대상 엔티티)는 지금 schema.json에 없는 정보라, Dataverse의
-Microsoft.Dynamics.CRM.LookupAttributeMetadata($expand=Targets)를 테이블별로 추가
-조회해야 한다 — 스키마 갱신(36개 테이블) 시간에 영향을 주는 작업이라 별도로 계획만
-해두고 이번 자동 초안 생성 범위에서는 뺐다(TODO: 다음 스프린트).
+joins(조인 관계) 후보는 schema.json의 각 테이블 항목에 캐시된 ``lookups``
+(Lookup/Owner/Customer 컬럼 → 대상 엔티티 논리명, backend/dataverse.py의
+fetch_entity_schema가 describe/스키마 갱신 시 채움)에서 만든다. 이 함수는 그 캐시된
+값만 읽으며 Dataverse를 다시 호출하지 않는다 — 대상 엔티티를 새로 조회하는 비용은
+describe_table 쪽에서 컬럼당 1회로 캐시하며(schema.json에 영속화), 대상 테이블이
+현재 카탈로그(schema_data의 key)에 없으면 후보에서 제외한다(대상 primary key는
+Dataverse 관례대로 ``<entitySetName 아닌 논리명>id``로 구성 — 별도 조회 불필요).
 """
 from __future__ import annotations
 
@@ -162,10 +164,45 @@ def _draft_terms(entries: list[dict[str, Any]], max_n: int = 8) -> list[dict[str
     ]
 
 
-def build_instructions_draft() -> dict[str, list[dict[str, str]]]:
+def _draft_joins(schema_data: dict[str, Any], max_n: int = 30) -> list[dict[str, str]]:
+    """schema.json에 이미 캐시된 lookups만 읽어 join 후보를 만든다(Dataverse 재호출 없음).
+
+    대상 테이블이 현재 카탈로그(schema_data의 key)에 없으면 제외한다 — 등록 안 된
+    테이블을 가리키는 join은 프로젝트 범위에서 실제로 쓸 수 없다. 대상 테이블의
+    primary key 컬럼명은 Dataverse 관례상 ``<논리명>id``로 고정이라 추가 조회 없이
+    구성한다.
+    """
+    known_tables = {t for t in schema_data if isinstance(t, str)}
+    joins: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for table, entry in schema_data.items():
+        if not isinstance(table, str) or not isinstance(entry, dict):
+            continue
+        lookups = entry.get("lookups")
+        if not isinstance(lookups, dict):
+            continue
+        for column, targets in lookups.items():
+            if not isinstance(column, str) or not isinstance(targets, list):
+                continue
+            for target in targets:
+                if not isinstance(target, str) or target == table or target not in known_tables:
+                    continue
+                key = (table, column, target)
+                if key in seen:
+                    continue
+                seen.add(key)
+                joins.append(
+                    {"fromTable": table, "fromCol": column, "toTable": target, "toCol": f"{target}id", "label": ""}
+                )
+                if len(joins) >= max_n:
+                    return joins
+    return joins
+
+
+def build_instructions_draft(schema_data: dict[str, Any] | None = None) -> dict[str, list[dict[str, str]]]:
     entries = _read_log_entries()
     return {
-        "joins": [],   # 의도적으로 비움 — 모듈 docstring 참고 (다음 스프린트 예정)
+        "joins": _draft_joins(schema_data or {}),
         "terms": _draft_terms(entries),
         "examples": _draft_examples(entries),
     }
