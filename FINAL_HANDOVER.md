@@ -1,15 +1,8 @@
 # CRM AI Notebook 통합 인수인계서
 
-> 최종 갱신: 2026-08-13 (Asia/Seoul)<br>
-> 문서 버전: `3.0`<br>
-> 상태: `Final` — 신규 기능 개발 종료, 유지보수 전환<br>
-> 적용 대상: `crm-ai-chat` 단일 프로젝트 — `LLM_PROVIDER`로 Cloud(anthropic)/Local(ollama) 프로필만 구분<br>
-> (2026-08-13부터: 과거 별도 동기화하던 `crm-ai-chat-local-llm` mirror 저장소는 폐기)<br>
-> 기준 런타임: React + TypeScript 프론트엔드 + Python/FastAPI 백엔드
+> 2026-08-13 기준, 신규 기능 개발 종료·유지보수 전환. 기준 런타임: React + TypeScript 프론트엔드 + Python/FastAPI 백엔드.
 
-이 문서는 `defineview/`의 8개 예시가 보여 준 문서 유형과 표 형식을 참고해 현재 코드를 기준으로 다시 작성한 최종 인수인계 문서다. 예시 이미지의 업무 내용은 제품 사양이 아니며 `defineview/`는 Git에서 제외한다.
-
-**제품 코드의 기준은 `crm-ai-chat` 하나뿐이다.** Cloud/Local은 별도 저장소가 아니라 같은 코드에서 `LLM_PROVIDER` 값만 다른 두 배포 프로필이며, 동일한 Python/FastAPI와 프론트엔드를 사용하고 배포 환경의 LLM 제공자·모델·접속 정보와 활성 로그 파일만 다르다.
+**제품 코드의 기준은 `crm-ai-chat` 하나뿐이다.** Cloud/Local은 별도 저장소가 아니라 같은 코드에서 `LLM_PROVIDER` 값만 다른 두 배포 프로필이며, 동일한 Python/FastAPI와 프론트엔드를 사용하고 배포 환경의 LLM 제공자·모델·접속 정보와 활성 로그 파일만 다르다. (별도 저장소인 `crm-ai-chat-mcp`는 이 제품과 무관한 독립 MCP 서버다.)
 
 ---
 
@@ -412,7 +405,7 @@ Vite는 기본 5173, FastAPI/Uvicorn은 `PORT`를 사용하며 프록시는 `VIT
 
 ## 9. 보안·권한
 
-> **P0 미완료 운영 조치:** 작업 과정에서 출력에 노출됐던 기존 Anthropic API 키를 다음 Anthropic 실행 전에 폐기하고 새 키로 교체한다. 실제 키 값은 소스·문서·노션에 남기지 않는다.
+> 작업 과정에서 출력에 노출됐던 기존 Anthropic API 키는 폐기·재발급 완료(2026-08-14). git 이력(`crm-ai-chat`, `crm-ai-chat-mcp` 전체 커밋·전체 브랜치) 검색으로 실제 값이 커밋된 적 없음도 확인했다.
 
 ### 9.1 현재 모델
 
@@ -482,38 +475,6 @@ Vite는 기본 5173, FastAPI/Uvicorn은 `PORT`를 사용하며 프록시는 `VIT
 
 ---
 
-## 12. 최종 인수 체크리스트
+## 12. 상세 정의서 이력
 
-- [x] 활성 `src/`, `backend/`와 실행 스크립트가 환경 간 동일한지 확인했다.
-- [ ] 각 환경의 `.env`에서 올바른 `LLM_PROVIDER`와 모델·endpoint를 설정했다.
-- [x] type-check, Python test 43/43, SPA build, Python compile을 통과했다.
-- [x] 두 checkout의 Local Ollama 환경에서 FastAPI `/api/chat` 안전 라이브 E2E를 각각 통과했다.
-- [ ] Anthropic 실환경 E2E는 데이터 외부 전송 승인 후에만 수행한다(현재 adapter 계약 테스트만 통과).
-- [ ] `/api/health`가 올바른 provider와 실제 dependency 상태를 표시한다.
-- [x] 공통 코드·자동 테스트로 12개 API와 SSE 이벤트가 두 프로필에서 같은 계약임을 확인했다.
-- [x] 자동 tool-loop 테스트와 Local E2E로 프로젝트의 tables/instructions가 서버 권위로 적용됨을 확인했다.
-- [ ] 기존 history가 canonical 형식으로 이어지고 성공 저장 후 마이그레이션됨을 확인했다.
-- [x] 활성 로그 파일이 프로필별 하나로 분리됨을 확인했다.
-- [ ] `.env`, `data/schema.json`, `data/projects/`, 필요한 로그를 별도 백업했다.
-- [ ] RBAC 없음, API key/SPA 제약, 데이터 평문 저장을 운영 승인자에게 전달했다.
-- [ ] Cloud 외부 전송 또는 Local Ollama 호스트 경계를 승인했다.
-- [ ] 노출된 기존 Anthropic API 키를 폐기하고 새 키로 교체했다.
-- [x] `defineview/`, `data/`, `logs/`, `.env`가 Git 제외 상태임을 확인했다.
-
----
-
-## 13. 상세 정의서 이력
-
-과거 화면정의서·화면설계서·메뉴정의서·플로우차트·정책정의서·권한정의서·인프라아키텍처정의서·API정의서·종단간검증시나리오 9종(`specifications/`, 3,111줄)은 이 문서(FINAL_HANDOVER.md)와 내용이 크게 중복되어 2026-08-14 삭제했다. 필요하면 git 이력(`git log --diff-filter=D -- specifications/`)에서 복원할 수 있다. 위 1~12절이 그 문서들이 다루던 화면·API·정책·권한·인프라·검증 내용의 현재 유효한 요약이다.
-
----
-
-## 14. 변경 이력
-
-| 버전 | 날짜 | 상태 | 변경 내용 |
-|---|---|---|---|
-| `1.0` | 2026-08-12 | Superseded | Python Cloud와 Express Local이 분리돼 있던 종료 조사 문서 |
-| `2.0` | 2026-08-12 | Superseded | 공통 React/Express 런타임을 기준으로 작성했던 이전 문서 |
-| `3.0` | 2026-08-13 | Final | 활성 백엔드를 Python/FastAPI로 확정하고 모듈·실행·빌드·검증·MCP 경계를 현행 코드 기준으로 갱신 |
-
-최종 원칙은 간단하다. **canonical 제품 코드는 하나, 배포 프로필은 둘이며 Local 저장소는 mirror다.** 이후 변경은 canonical에서 수행하고 provider 설정을 제외한 같은 revision을 mirror에 반영한다.
+과거 화면정의서·화면설계서·메뉴정의서·플로우차트·정책정의서·권한정의서·인프라아키텍처정의서·API정의서·종단간검증시나리오 9종(`specifications/`, 3,111줄)은 이 문서(FINAL_HANDOVER.md)와 내용이 크게 중복되어 2026-08-14 삭제했다. 필요하면 git 이력(`git log --diff-filter=D -- specifications/`)에서 복원할 수 있다. 위 1~11절이 그 문서들이 다루던 화면·API·정책·권한·인프라·검증 내용의 현재 유효한 요약이다.
