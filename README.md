@@ -7,6 +7,11 @@ Dataverse(Dynamics 365 CRM)를 자연어로 조회하는 읽기 전용 노트북
 `crm-ai-chat` 단일 프로젝트로 운영합니다. `.env`의 `LLM_PROVIDER`만 `anthropic`/`ollama`로 바꾸면 같은 백엔드가 클라우드·로컬 LLM을 모두 처리합니다.
 (2026-08-13부터: 과거 별도로 동기화하던 `crm-ai-chat-local-llm` mirror 저장소는 폐기했고, 더 이상 두 저장소를 유지하지 않습니다.)
 
+## 이 저장소로 배울 수 있는 것
+
+- **클라우드/로컬 LLM을 하나의 계약으로 전환**: `LLM_PROVIDER` 한 값으로 Anthropic(cloud)과 Ollama(local)를 오가면서도 화면·API·도구·오류 계약이 동일하게 유지되는 provider adapter 패턴(`llm_provider.py` + `anthropic_provider.py`/`ollama_provider.py` + `provider_factory.py`).
+- **Dataverse를 LLM 도구로 direct tool-loop 연동**: `chat_api.py`의 도구 루프가 `dataverse_query`/`dataverse_describe_table`을 LLM에 직접 노출하고, OData 경로 allowlist·응답 크기 상한으로 감싸는 패턴. **MCP 프로토콜은 쓰지 않습니다** — 같은 Dataverse 조회를 MCP로 감싸는 버전은 별도 저장소 [crm-ai-chat-mcp](../crm-ai-chat-mcp)에 있습니다.
+
 ## 아키텍처
 
 ```mermaid
