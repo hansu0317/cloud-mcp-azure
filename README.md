@@ -1,6 +1,6 @@
 # Quali CRM AI Notebook
 
-> 2026-08-13 기준 기능 개발을 종료하고 인수인계 상태로 전환했습니다. 최종 기준은 [개발 종료 인수인계서](FINAL_HANDOVER.md)와 [9개 상세 명세](#개발-종료--인수인계)입니다.
+> 2026-08-13 기준 기능 개발을 종료하고 인수인계 상태로 전환했습니다. 최종 기준은 [개발 종료 인수인계서](FINAL_HANDOVER.md)입니다.
 
 Dataverse(Dynamics 365 CRM)를 자연어로 조회하는 읽기 전용 노트북형 챗봇입니다. 이 저장소의 기준 런타임은 **React + Vite 프론트엔드와 Python/FastAPI 백엔드**입니다. `LLM_PROVIDER`로 Anthropic 또는 Ollama만 선택하며 화면, API, Dataverse 도구, 프롬프트 정책, 프로젝트 저장 형식과 오류 계약은 같습니다.
 
@@ -205,21 +205,12 @@ DB는 없으며 `data/`가 상태의 원본입니다.
 
 개발·운영 진입점은 `backend/main.py`입니다. `package.json`의 `dev:server`는 Uvicorn으로 `backend.main:app`을 실행하고, `start`는 `python -m backend.main`을 실행합니다. (폐기된 `crm-ai-chat-local-llm`에 보존돼 있던 `server/*.ts`, `shared/`, `tests/`, `dist-server/`, `claudeapi/`는 레거시 Node/TS 백엔드였으며 그 저장소와 함께 더 이상 사용하지 않습니다.) 유일한 활성 백엔드는 `backend/` Python/FastAPI입니다. 사용자 데이터가 새 형식으로 성공 저장되기 전에는 기존 `data/`를 삭제하지 마세요.
 
-2026-08-13 종료 검증에서 `npm run type-check`, `npm test`(43/43), `npm run build`, Python 컴파일 검사를 통과했습니다. 자동 검증에는 실제 FastAPI SSE 도구 루프, 지침·서버 범위, 동시 요청 직렬화, 오류 rollback, Dataverse 응답·재시도, 원자 저장과 로그 회전도 포함됩니다. 또한 Local Ollama(`qwen3:8b`) + FastAPI + Dataverse REST의 안전한 `$top=0` 라이브 E2E를 canonical checkout과 Local mirror checkout에서 각각 실행해 describe 1회, query 2회, 지침 marker, SSE done 1/error 0, 테스트 프로젝트 정리를 모두 확인했습니다. CRM 행은 두 실행 모두 LLM에 보내지 않았습니다. Anthropic live는 스키마의 외부 전송 위험 때문에 실행하지 않았고 adapter 계약 테스트로만 검증했습니다. 세부 증거와 범위는 [09 종단간 검증 시나리오](specifications/09_종단간검증시나리오.md)에 기록했습니다.
+2026-08-13 종료 검증에서 `npm run type-check`, `npm test`(43/43), `npm run build`, Python 컴파일 검사를 통과했습니다. 자동 검증에는 실제 FastAPI SSE 도구 루프, 지침·서버 범위, 동시 요청 직렬화, 오류 rollback, Dataverse 응답·재시도, 원자 저장과 로그 회전도 포함됩니다. 또한 Local Ollama(`qwen3:8b`) + FastAPI + Dataverse REST의 안전한 `$top=0` 라이브 E2E를 canonical checkout과 Local mirror checkout에서 각각 실행해 describe 1회, query 2회, 지침 marker, SSE done 1/error 0, 테스트 프로젝트 정리를 모두 확인했습니다. CRM 행은 두 실행 모두 LLM에 보내지 않았습니다. Anthropic live는 스키마의 외부 전송 위험 때문에 실행하지 않았고 adapter 계약 테스트로만 검증했습니다.
 
 ## 개발 종료 · 인수인계
 
 - [배포·운영 안내](DEPLOYMENT.md)
-- [최종 개발 종료 인수인계서](FINAL_HANDOVER.md)
-- [01 화면정의서](specifications/01_화면정의서.md)
-- [02 화면설계서](specifications/02_화면설계서.md)
-- [03 메뉴정의서](specifications/03_메뉴정의서.md)
-- [04 플로우차트](specifications/04_플로우차트.md)
-- [05 정책정의서](specifications/05_정책정의서.md)
-- [06 권한정의서](specifications/06_권한정의서.md)
-- [07 인프라 아키텍처 정의서](specifications/07_인프라아키텍처정의서.md)
-- [08 API 정의서](specifications/08_API정의서.md)
-- [09 종단간 검증 시나리오](specifications/09_종단간검증시나리오.md)
+- [최종 개발 종료 인수인계서](FINAL_HANDOVER.md) — API·정책·권한·인프라·검증 상세는 여기 하나로 통합돼 있습니다.
 - [Notion 통합 인수인계 문서](https://app.notion.com/p/3babcaaf1f5281eca0c6c6dc049945de?pvs=204)
 
 운영 중 수정이 꼭 필요하면 canonical 저장소의 `backend/`와 공통 프론트엔드를 수정하고 Cloud/Local 프로필을 함께 회귀 검증한 뒤 Local mirror에 동일 revision을 반영하세요. 환경별 `.env`와 데이터·로그는 Git 밖에서 분리 관리합니다.

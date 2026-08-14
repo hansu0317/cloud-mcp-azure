@@ -502,19 +502,9 @@ Vite는 기본 5173, FastAPI/Uvicorn은 `PORT`를 사용하며 프록시는 `VIT
 
 ---
 
-## 13. 상세 정의서 8종과 검증 시나리오
+## 13. 상세 정의서 이력
 
-| No. | 문서 | 링크 | 주요 내용 |
-|---:|---|---|---|
-| 01 | 화면정의서 | [`specifications/01_화면정의서.md`](specifications/01_화면정의서.md) | Screen ID, 와이어프레임, 항목별 검수 |
-| 02 | 화면설계서 | [`specifications/02_화면설계서.md`](specifications/02_화면설계서.md) | 상태·컴포넌트·상호작용 설계 |
-| 03 | 메뉴정의서 | [`specifications/03_메뉴정의서.md`](specifications/03_메뉴정의서.md) | GNB/LNB/Content 메뉴와 노출 규칙 |
-| 04 | 플로우차트 | [`specifications/04_플로우차트.md`](specifications/04_플로우차트.md) | 질문·도구·프로젝트·스키마·오류 흐름 |
-| 05 | 정책정의서 | [`specifications/05_정책정의서.md`](specifications/05_정책정의서.md) | 현행 정책, 운영 결정, 위험 정책 |
-| 06 | 권한정의서 | [`specifications/06_권한정의서.md`](specifications/06_권한정의서.md) | 현재 무-RBAC 권한과 목표 모델 |
-| 07 | 인프라 아키텍처 | [`specifications/07_인프라아키텍처정의서.md`](specifications/07_인프라아키텍처정의서.md) | 공통 런타임, 프로필 경계, 네트워크·백업 |
-| 08 | API정의서 | [`specifications/08_API정의서.md`](specifications/08_API정의서.md) | 공통 12개 API, SSE, 오류·보안 계약 |
-| 09 | 종단간 검증 시나리오 | [`specifications/09_종단간검증시나리오.md`](specifications/09_종단간검증시나리오.md) | MCP·REST·schema·Text-to-OData·지침의 재현 절차와 실측 증거 |
+과거 화면정의서·화면설계서·메뉴정의서·플로우차트·정책정의서·권한정의서·인프라아키텍처정의서·API정의서·종단간검증시나리오 9종(`specifications/`, 3,111줄)은 이 문서(FINAL_HANDOVER.md)와 내용이 크게 중복되어 2026-08-14 삭제했다. 필요하면 git 이력(`git log --diff-filter=D -- specifications/`)에서 복원할 수 있다. 위 1~12절이 그 문서들이 다루던 화면·API·정책·권한·인프라·검증 내용의 현재 유효한 요약이다.
 
 ---
 

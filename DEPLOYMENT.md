@@ -100,4 +100,4 @@ npm run test:e2e:safe
 - 복구 전 현재 `data/`를 별도 보존하고 백업을 배치한 뒤 health·프로젝트 목록·승인된 샘플 조회를 확인한다.
 - Cloud/Local 두 프로필을 동시에 띄울 때도 같은 `data/`를 공유해서 쓰지 않는다(포트만 다르고 `data/`는 프로필별로 분리). (2026-08-13부터 별도 `crm-ai-chat-local-llm` mirror 저장소는 폐기했고, `crm-ai-chat` 하나에서 `LLM_PROVIDER`로만 Cloud/Local을 나눈다.)
 
-전체 아키텍처·API·정책·검증 증거는 [FINAL_HANDOVER.md](FINAL_HANDOVER.md)와 [specifications/](specifications/)를 따른다.
+전체 아키텍처·API·정책·검증 증거는 [FINAL_HANDOVER.md](FINAL_HANDOVER.md)를 따른다.
