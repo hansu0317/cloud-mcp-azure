@@ -125,27 +125,40 @@ function Start-Server {
         npm run build:client
         if ($LASTEXITCODE -ne 0) { throw "Frontend build failed (exit $LASTEXITCODE)." }
         Write-Host "[START] starting FastAPI $Profile profile ($Provider)..."
-        $process = Start-Process -FilePath $PythonExe -ArgumentList @('-m', 'backend.main') -WorkingDirectory $AppDir -WindowStyle Hidden -PassThru
+        $launcher = Start-Process -FilePath $PythonExe -ArgumentList @('-m', 'backend.main') -WorkingDirectory $AppDir -WindowStyle Hidden -PassThru
     } finally { Pop-Location }
 
-    Set-Content -LiteralPath $PidFile -Value $process.Id -Encoding ascii
+    # 이 환경의 .venv\Scripts\python.exe는 실제 작업을 하는 프로세스가 아니라
+    # launcher다 — 진짜 워커는 base interpreter의 별도 자식 프로세스로 뜬다(실측:
+    # crm-ai-chat-mcp에서 동일 launch 방식으로 재현·확인함). Start-Process가 돌려주는
+    # PID(launcher)는 실제로 포트를 리스닝하는 PID(worker)와 다를 수 있어서, PID
+    # 일치를 요구하지 않고 포트가 리스닝 상태가 될 때까지만 기다린 뒤 그 시점에 실제로
+    # 포트를 쥔 PID를 다시 조회해서 그걸 관리 대상으로 쓴다.
     $timer = [Diagnostics.Stopwatch]::StartNew()
+    $owned = $null
     while ($timer.Elapsed.TotalSeconds -lt $StartTimeout) {
-        if (-not (Get-OwnedServerProcess -CandidateId $process.Id)) { break }
-        $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -eq $process.Id } | Select-Object -First 1
+        $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($listener) {
-            Write-Host "[OK] FastAPI server started (PID: $($process.Id))"
-            Write-Host "     profile: $Profile ($Provider)"
-            Write-Host "     url: http://localhost:$Port"
-            Write-Host "     structured log: $StructuredLog"
-            return
+            $owned = Get-OwnedServerProcess -CandidateId $listener.OwningProcess
+            if (-not $owned) {
+                throw "Port $Port is occupied by a process that is not this FastAPI server; refusing to manage it."
+            }
+            break
         }
         Start-Sleep -Milliseconds 250
     }
+    if ($owned) {
+        Set-Content -LiteralPath $PidFile -Value $owned.Id -Encoding ascii
+        Write-Host "[OK] FastAPI server started (PID: $($owned.Id))"
+        Write-Host "     profile: $Profile ($Provider)"
+        Write-Host "     url: http://localhost:$Port"
+        Write-Host "     structured log: $StructuredLog"
+        return
+    }
+
     Write-Host "[FAIL] server did not listen on port $Port within ${StartTimeout}s:"
     Get-Content -LiteralPath $StructuredLog -Tail 20 -Encoding UTF8 -ErrorAction SilentlyContinue
-    $owned = Get-OwnedServerProcess -CandidateId $process.Id
-    if ($owned) { Stop-Process -Id $owned.Id -Force -ErrorAction SilentlyContinue }
+    taskkill /F /T /PID $launcher.Id 2>$null | Out-Null
     Remove-Item -LiteralPath $PidFile -ErrorAction SilentlyContinue
     exit 1
 }
