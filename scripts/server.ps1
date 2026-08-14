@@ -154,14 +154,25 @@ function Stop-Server {
     $process = Get-ServerProcess
     if (-not $process) { Write-Host '[WARN] no server running'; Remove-Item -LiteralPath $PidFile -ErrorAction SilentlyContinue; return }
     Write-Host "[STOP] stopping server (PID: $($process.Id))..."
-    taskkill /T /PID $process.Id 2>&1 | Out-Null
+    # taskkill writes to stderr whenever any process in the tree can't be closed
+    # gracefully without /F (routine for a hidden, windowless `-WindowStyle Hidden`
+    # process/child — Windows has no window to send WM_CLOSE to). Do NOT route that
+    # through PowerShell's error stream (2>&1 / 2>$null / *>): under this script's
+    # $ErrorActionPreference = 'Stop', Windows PowerShell 5.1 wraps a native command's
+    # redirected stderr into a terminating ErrorRecord, which aborted this function
+    # right here before it ever reached the timeout/force-kill fallback below. Leaving
+    # stderr unredirected prints it as plain informational text instead.
+    taskkill /T /PID $process.Id | Out-Null
     $timer = [Diagnostics.Stopwatch]::StartNew()
     while ($timer.Elapsed.TotalSeconds -lt $StopTimeout -and (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) {
         Start-Sleep -Milliseconds 250
     }
     if (Get-OwnedServerProcess -CandidateId $process.Id) {
-        Write-Host "[WARN] graceful stop timed out after ${StopTimeout}s; forcing owned process."
-        Stop-Process -Id $process.Id -Force -ErrorAction Stop
+        Write-Host "[WARN] graceful stop timed out after ${StopTimeout}s; force-killing owned process tree."
+        # Stop-Process only targets this single PID, not its children — a child that
+        # survived the graceful taskkill above (like the one that triggered this fix)
+        # would otherwise be orphaned. Force + tree kill covers that.
+        taskkill /F /T /PID $process.Id | Out-Null
     }
     Remove-Item -LiteralPath $PidFile -ErrorAction SilentlyContinue
     Write-Host '[OK] server stopped'
