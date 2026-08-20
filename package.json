@@ -11,7 +11,7 @@
     "build:client": "vite build",
     "start": "python -m backend.main",
     "type-check": "tsc --noEmit",
-    "test": "python -m unittest discover -s tests_py -p \"test_*.py\" -v && python -m unittest discover -s tests_python -p \"test_*.py\" -v",
+    "test": "python -m unittest discover -s tests_python -p \"test_*.py\" -v",
     "test:e2e:safe": "python scripts/e2e_fastapi_safe.py",
     "preview": "vite preview"
   },

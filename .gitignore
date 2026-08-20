@@ -16,7 +16,6 @@ CLAUDE.md
 *.pptx
 *.ppt
 *.pdf
-docs/
 
 # 문서 작성 참고 이미지 (로컬 전용)
 defineview/

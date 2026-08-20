@@ -1,5 +1,7 @@
 # backend — 활성 Python/FastAPI 백엔드
 
+> 프로젝트 전체 문서는 [../docs/README.md](../docs/README.md)에서 시작하세요. 이 문서는 `backend/` 코드를 직접 수정할 때 보는 모듈 단위 참고 자료입니다.
+
 이 폴더가 Cloud/Local 두 프로필의 유일한 활성 백엔드입니다. UI·API·프롬프트·
 Dataverse REST·프로젝트·히스토리·로그 계약은 같고 `LLM_PROVIDER`만 바꾸어
 Anthropic 또는 Ollama를 선택합니다.

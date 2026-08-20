@@ -5,10 +5,11 @@ import { API } from '../constants'
 import type { Instructions, JoinDef, TermDef, ExampleDef } from '../types'
 
 interface Props {
-  projectName:  string
-  instructions: Instructions
-  onSave:       (next: Instructions) => Promise<void>
-  onClose:      () => void
+  projectName:   string
+  projectTables: string[]
+  instructions:  Instructions
+  onSave:        (next: Instructions) => Promise<void>
+  onClose:       () => void
 }
 
 type Tab = 'joins' | 'terms' | 'examples'
@@ -84,7 +85,7 @@ function ColumnSelect({ value, columns, loading, onChange }: {
 // 조인·용어 탭은 테이블/컬럼의 정확한 논리명(new_q3, customerid 같은)을 몰라도 되도록
 // ①②③… 순서로 드롭다운을 채워나가는 방식이다 — 카탈로그(GET /api/tables)와 컬럼
 // 설명(GET /api/describe)을 그대로 재사용해 새 서버 코드 없이 프론트에서만 구현했다.
-export default function InstructionsModal({ projectName, instructions, onSave, onClose }: Props) {
+export default function InstructionsModal({ projectName, projectTables, instructions, onSave, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('joins')
   const [joins,    setJoins]    = useState<JoinDef[]>(instructions.joins)
   const [terms,    setTerms]    = useState<TermDef[]>(instructions.terms)
@@ -111,7 +112,14 @@ export default function InstructionsModal({ projectName, instructions, onSave, o
       .catch(() => setCatalog([]))
   }, [])
 
-  const domains = useMemo(() => [...new Set(catalog.map(t => t.domain))], [catalog])
+  // 프로젝트가 테이블 범위를 지정해뒀으면(대부분 그렇다) 그 테이블들로만 관계·용어
+  // 드롭다운을 제한한다 — 범위 밖 테이블을 가리키는 지침은 실제 조회에서 쓸 수 없어서
+  // 애초에 고를 수 없게 막는 게 낫다. 범위가 비어있으면(= 전체 허용) 전체 카탈로그를 그대로 쓴다.
+  const scopedCatalog = useMemo(
+    () => (projectTables.length > 0 ? catalog.filter(t => projectTables.includes(t.name)) : catalog),
+    [catalog, projectTables],
+  )
+  const domains = useMemo(() => [...new Set(scopedCatalog.map(t => t.domain))], [scopedCatalog])
 
   const ensureColumns = (table: string) => {
     if (!table || columnsCache[table] || columnsLoading[table]) return
@@ -255,7 +263,7 @@ export default function InstructionsModal({ projectName, instructions, onSave, o
                     <label className="instr-step-q">어떤 테이블에서 시작할까요?</label>
                     <TableSelect
                       value={joinDraft.fromTable}
-                      catalog={catalog}
+                      catalog={scopedCatalog}
                       domains={domains}
                       onChange={v => { setJoinDraft(d => ({ ...d, fromTable: v, fromCol: '' })); ensureColumns(v) }}
                     />
@@ -284,7 +292,7 @@ export default function InstructionsModal({ projectName, instructions, onSave, o
                       <label className="instr-step-q">어떤 테이블과 연결되나요?</label>
                       <TableSelect
                         value={joinDraft.toTable}
-                        catalog={catalog}
+                        catalog={scopedCatalog}
                         domains={domains}
                         onChange={v => { setJoinDraft(d => ({ ...d, toTable: v, toCol: '' })); ensureColumns(v) }}
                       />
@@ -355,7 +363,7 @@ export default function InstructionsModal({ projectName, instructions, onSave, o
                     <label className="instr-step-q">어떤 테이블인가요?</label>
                     <TableSelect
                       value={termDraft.table}
-                      catalog={catalog}
+                      catalog={scopedCatalog}
                       domains={domains}
                       onChange={v => { setTermDraft(d => ({ ...d, table: v, column: '' })); ensureColumns(v) }}
                     />

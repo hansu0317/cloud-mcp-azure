@@ -174,14 +174,29 @@ function Stop-Server {
     # $ErrorActionPreference = 'Stop', Windows PowerShell 5.1 wraps a native command's
     # redirected stderr into a terminating ErrorRecord, which aborted this function
     # right here before it ever reached the timeout/force-kill fallback below. Leaving
-    # stderr unredirected prints it as plain informational text instead.
+    # stderr unredirected prints it as plain informational text instead — the ERROR
+    # line above is expected for this launch pattern, not a sign this script failed.
     taskkill /T /PID $process.Id | Out-Null
-    $timer = [Diagnostics.Stopwatch]::StartNew()
-    while ($timer.Elapsed.TotalSeconds -lt $StopTimeout -and (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) {
-        Start-Sleep -Milliseconds 250
+    # For our own -WindowStyle Hidden launch, this graceful attempt always fails
+    # immediately (no window to close) and taskkill reports that via a non-zero exit
+    # code right away — polling for up to $StopTimeout after a signal that was never
+    # delivered just burns time for no benefit (reproduced: a real ~32s no-feedback
+    # stall on every single stop). Only wait when taskkill actually reports success;
+    # otherwise skip straight to the force-kill fallback below.
+    $gracefulSignalSent = ($LASTEXITCODE -eq 0)
+    if ($gracefulSignalSent) {
+        Write-Host "[WAIT] graceful signal sent, waiting up to ${StopTimeout}s for shutdown..."
+        $timer = [Diagnostics.Stopwatch]::StartNew()
+        while ($timer.Elapsed.TotalSeconds -lt $StopTimeout -and (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) {
+            Start-Sleep -Milliseconds 250
+        }
     }
     if (Get-OwnedServerProcess -CandidateId $process.Id) {
-        Write-Host "[WARN] graceful stop timed out after ${StopTimeout}s; force-killing owned process tree."
+        if ($gracefulSignalSent) {
+            Write-Host "[WARN] graceful stop timed out after ${StopTimeout}s; force-killing owned process tree."
+        } else {
+            Write-Host '[INFO] graceful signal could not be delivered (no window to close); force-killing owned process tree.'
+        }
         # Stop-Process only targets this single PID, not its children — a child that
         # survived the graceful taskkill above (like the one that triggered this fix)
         # would otherwise be orphaned. Force + tree kill covers that.

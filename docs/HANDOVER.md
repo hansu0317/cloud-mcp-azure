@@ -38,7 +38,7 @@
 
 ### 0.3 유지보수 원칙
 
-1. 공통 기능은 canonical 저장소에서 수정하고 두 프로필을 회귀 검증한 뒤 mirror에 동기화한다.
+1. 공통 기능을 수정한 뒤 Cloud/Local 두 프로필을 함께 회귀 검증한다(단일 저장소이므로 별도 mirror 동기화 단계는 없다).
 2. 제공자별 코드는 `backend/anthropic_provider.py`, `backend/ollama_provider.py` 경계 안에 둔다.
 3. `backend/chat_api.py`와 프론트엔드에 제공자별 분기를 추가하지 않는다.
 4. 배포 차이는 `.env`로만 표현한다.
@@ -156,7 +156,8 @@ flowchart LR
 | `UI-03` | 테이블 선택 | 프로젝트의 테이블 수/추가 버튼 | 검색·도메인 필터·전체/개별 선택 |
 | `UI-04` | 프로젝트별 지침 | 헤더 `지침` | 관계·용어·예시 편집, 공통 초안 생성 |
 | `UI-05` | 질문 셀 | 노트북 반복 항목 | 입력·실행·상태·답변·쿼리·내보내기 |
-| `UI-06` | 서버 로그 | 사용자 메뉴 없음 | 컴포넌트는 있으나 현재 미연결 |
+
+(과거 `UI-06` 서버 로그 화면은 메뉴에 연결된 적 없는 미완성 컴포넌트였다. 2026-08-18 정리에서 `src/components/LogModal.tsx`를 삭제했다 — `/api/logs`는 API로는 남아 있고 화면만 없다.)
 
 UI는 Cloud/Local에서 같으며 제공자 이름은 연결 환경 표시와 응답 특성에만 영향을 준다. 지침 초안 버튼과 `/api/instructions/draft`도 두 프로필에서 같다.
 
@@ -401,6 +402,31 @@ Vite는 기본 5173, FastAPI/Uvicorn은 `PORT`를 사용하며 프록시는 `VIT
 5. Cloud는 `server.cloud.log`, Local은 `server.local.log`에 기록되는지 확인한다.
 6. 지침 초안이 현재 프로필 로그만 읽고 자동 저장하지 않는지 확인한다.
 
+### 8.3 운영 스크립트와 배포 검증 명령
+
+`npm start`(`python -m backend.main`)를 직접 실행하는 대신 다음 운영 스크립트를 쓸 수 있다.
+
+| 환경 | 스크립트 | 비고 |
+|---|---|---|
+| Windows | `scripts\server.ps1 start\|status\|logs\|stop` | 소유한 FastAPI PID만 종료, 별도 콘솔 로그 파일 없음 |
+| Linux | `scripts/server.sh` | 같은 start/status/logs/stop 인터페이스 |
+| PM2 | `scripts/ecosystem.config.js` | Linux에서 PM2로 상시 구동할 때 사용 |
+| Reverse proxy | `scripts/nginx.conf.example` | nginx 뒤에 둘 때 참고용 설정 예시 |
+
+배포 전/후 검증은 다음 명령으로 재현한다(2026-08-13 종료 검증에 사용한 것과 동일):
+
+```powershell
+npm run type-check
+npm test
+npm run build
+.venv\Scripts\python -m compileall -q backend scripts\e2e_fastapi_safe.py
+.venv\Scripts\python -m pip check
+```
+
+Local Ollama와 Dataverse가 준비된 환경에서는 `npm run test:e2e:safe`(`$top=0`만 사용, CRM 행을 LLM에 보내지 않음)를 추가로 실행할 수 있다.
+
+앱 포트는 사내망 또는 reverse proxy 뒤에서만 노출하고 인터넷에 직접 공개하지 않는다. 전달 헤더는 기본적으로 loopback proxy만 신뢰하며, 다른 proxy가 필요할 때만 `FORWARDED_ALLOW_IPS`를 구체적으로 설정한다. `/docs`, `/redoc`, `/openapi.json`은 기본 비활성이며 진단 환경에서만 `ENABLE_API_DOCS=true`로 켠다.
+
 ---
 
 ## 9. 보안·권한
@@ -454,7 +480,8 @@ Vite는 기본 5173, FastAPI/Uvicorn은 `PORT`를 사용하며 프록시는 `VIT
 1. 레거시 디렉터리가 남으면 현행 구현으로 오해할 수 있다.
 2. Local mirror는 자동 동기화되지 않으므로 revision 확인 없이 운영하면 코드가 드리프트할 수 있다.
 3. 자동 테스트 43개는 provider, 실제 FastAPI SSE 도구 루프, 동시성·rollback, 프로젝트·history 비노출, OData/Dataverse 경계, 파일·로그 내구성과 API 계약을 다루지만 UI·Anthropic 실환경 회귀를 모두 보장하지 않는다.
-4. 앱 LICENSE·운영 책임자·SLA는 저장소에서 확정되지 않았다.
+4. Cloud/Local 두 프로필이 같은 코드를 공유하므로, 한쪽 프로필만 검증하고 배포하면 다른 프로필의 회귀를 놓칠 수 있다.
+5. 앱 LICENSE·운영 책임자·SLA는 저장소에서 확정되지 않았다.
 
 ---
 
@@ -477,4 +504,9 @@ Vite는 기본 5173, FastAPI/Uvicorn은 `PORT`를 사용하며 프록시는 `VIT
 
 ## 12. 상세 정의서 이력
 
-과거 화면정의서·화면설계서·메뉴정의서·플로우차트·정책정의서·권한정의서·인프라아키텍처정의서·API정의서·종단간검증시나리오 9종(`specifications/`, 3,111줄)은 이 문서(FINAL_HANDOVER.md)와 내용이 크게 중복되어 2026-08-14 삭제했다. 필요하면 git 이력(`git log --diff-filter=D -- specifications/`)에서 복원할 수 있다. 위 1~11절이 그 문서들이 다루던 화면·API·정책·권한·인프라·검증 내용의 현재 유효한 요약이다.
+과거 화면정의서·화면설계서·메뉴정의서·플로우차트·정책정의서·권한정의서·인프라아키텍처정의서·API정의서·종단간검증시나리오 9종(`specifications/`, 3,111줄)은 이 문서(HANDOVER.md)와 내용이 크게 중복되어 2026-08-14 삭제했다. 필요하면 git 이력(`git log --diff-filter=D -- specifications/`)에서 복원할 수 있다. 위 1~11절이 그 문서들이 다루던 화면·API·정책·권한·인프라·검증 내용의 현재 유효한 요약이다.
+
+### 변경 이력
+
+- 2026-08-14: `specifications/` 9종 삭제, 이 문서(당시 `FINAL_HANDOVER.md`)로 통합.
+- 2026-08-18: 문서를 `docs/HANDOVER.md`로 이동하고 `DEPLOYMENT.md`를 흡수 삭제(§8.3에 운영 스크립트·배포 검증 명령 병합). `tests_py/`를 `tests_python/`으로 통합. 미연결 상태였던 `UI-06`(`LogModal.tsx`) 삭제. `crm-ai-chat-local-llm` mirror가 이미 폐기된 사실을 반영해 §0.3·§10의 잔여 mirror 언급을 정정. 상세 배포 시나리오는 [DEPLOYMENT_OPTIONS.md](DEPLOYMENT_OPTIONS.md), Notion 대조 결과는 [NOTION.md](NOTION.md) 참고.

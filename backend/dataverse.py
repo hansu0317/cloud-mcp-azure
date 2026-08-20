@@ -288,12 +288,16 @@ async def fetch_entity_schema(
 
     path = (
         f"EntityDefinitions(LogicalName='{logical_name}')"
-        "?$select=EntitySetName,DisplayName"
-        "&$expand=Attributes($select=LogicalName,AttributeType,DisplayName,RequiredLevel)"
+        "?$select=EntitySetName,DisplayName,Description"
+        "&$expand=Attributes($select=LogicalName,AttributeType,DisplayName,RequiredLevel,Description)"
     )
     text = await dataverse_get(path, max_bytes=METADATA_MAX_RESPONSE_BYTES)
     meta = json.loads(text)
     attrs: list[dict[str, Any]] = meta.get("Attributes") or []
+    # Dataverse 관리자가 테이블/컬럼에 직접 입력해둔 설명(Description). 커스텀
+    # 필드는 비어있는 경우가 흔하지만, 채워져 있으면 라벨만으로는 알 수 없는
+    # 업무 의미를 LLM이 그대로 읽을 수 있다 — 없으면 빈 문자열이라 출력에 영향 없음.
+    entity_description = _label_of(meta.get("Description"), "")
     if not attrs:
         raise RuntimeError("속성 정보를 가져오지 못했습니다.")
 
@@ -327,10 +331,14 @@ async def fetch_entity_schema(
         required_level = (a.get("RequiredLevel") or {}).get("Value")
         required = required_level in ("ApplicationRequired", "SystemRequired")
         options = option_map.get(a["LogicalName"])
+        admin_desc = _label_of(a.get("Description"), "")
         desc = f"{label}{f' ({options})' if options else ''}{' (필수)' if required else ''}"
+        if admin_desc:
+            desc = f"{desc} — {admin_desc}"
         rows.append(f"| {a['LogicalName']} | {a.get('AttributeType', '?')} | {desc} |")
 
-    markdown = "\n".join(["| 컬럼명 | 타입 | 한국어 설명 |", "|---|---|---|", *rows])
+    table = "\n".join(["| 컬럼명 | 타입 | 한국어 설명 |", "|---|---|---|", *rows])
+    markdown = f"{entity_description}\n\n{table}" if entity_description else table
     entity_set_name = meta.get("EntitySetName") or f"{logical_name}s"
     return EntitySchemaResult(entity_set_name=entity_set_name, markdown=markdown, lookups=lookup_map)
 

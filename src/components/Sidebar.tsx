@@ -176,10 +176,10 @@ export default function Sidebar({
                   <span className="proj-name">{p.name}</span>
                   <button
                     className="proj-table-badge clickable"
-                    title="테이블 선택 열기"
+                    title={p.tables.length > 0 ? '테이블 선택 열기' : '테이블 미선택 — 등록된 전체 테이블 조회 가능. 클릭해서 범위 지정'}
                     onClick={e => { e.stopPropagation(); setEditingProject(p) }}
                   >
-                    {p.tables.length > 0 ? `${p.tables.length}개` : '전체'}
+                    {p.tables.length}개
                   </button>
                 </div>
               )}

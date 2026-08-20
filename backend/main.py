@@ -73,6 +73,11 @@ schema_refreshing = False
 schema_cache: dict[str, str] = {}                      # 스키마 텍스트
 schema_meta: dict[str, dict[str, str]] = {}             # 등록 테이블 전체
 pending_describe: dict[str, asyncio.Task] = {}
+# schema.json은 "전체를 읽고 한 항목만 고쳐서 전체를 다시 쓰는" 구조라, 여러 테이블을
+# 동시에 describe(스키마 갱신은 6개씩 병렬)하면 나중에 끝난 쓰기가 먼저 끝난 쓰기를
+# 통째로 덮어써 유실시킬 수 있다. 느린 Dataverse 네트워크 조회는 동시에 하되, 파일을
+# 읽고-고치고-쓰는 구간만 이 락으로 직렬화해 그 경합을 막는다.
+_schema_write_lock = asyncio.Lock()
 
 
 def _is_string_array(value) -> bool:
@@ -370,15 +375,25 @@ async def describe_table(table: str) -> str:
     known_lookups = known_lookups if isinstance(known_lookups, dict) else None
     result = await fetch_entity_schema(table, known_lookups=known_lookups)
 
-    entry.update({"schema": result.markdown, "entitySetName": result.entity_set_name, "updatedAt": _now_iso()})
-    if result.lookups:
-        entry["lookups"] = result.lookups
-    existing[table] = entry
-    _atomic_write_json(SCHEMA_FILE, existing)
-    # 파일 영속화가 성공한 뒤에만 메모리 캐시를 갱신한다.
-    schema_cache[table] = result.markdown
-    if table not in schema_meta:
-        schema_meta[table] = {"label": entry.get("label") or table, "domain": entry.get("domain") or "기타"}
+    # 느린 네트워크 조회(fetch_entity_schema)는 이미 끝났으니, 파일 읽기-수정-쓰기만
+    # 락 안에서 다시 한다 — 락을 기다리는 동안 다른 테이블이 먼저 썼을 수 있으므로
+    # existing/entry를 여기서 새로 읽어야 그 갱신을 덮어쓰지 않는다.
+    async with _schema_write_lock:
+        existing = _read_json_file(SCHEMA_FILE, {})
+        if not isinstance(existing, dict):
+            raise RuntimeError("schema.json 최상위 값은 JSON 객체여야 합니다.")
+        entry = existing.get(table, {})
+        if not isinstance(entry, dict):
+            raise RuntimeError(f'schema.json의 "{table}" 항목은 JSON 객체여야 합니다.')
+        entry.update({"schema": result.markdown, "entitySetName": result.entity_set_name, "updatedAt": _now_iso()})
+        if result.lookups:
+            entry["lookups"] = result.lookups
+        existing[table] = entry
+        _atomic_write_json(SCHEMA_FILE, existing)
+        # 파일 영속화가 성공한 뒤에만 메모리 캐시를 갱신한다.
+        schema_cache[table] = result.markdown
+        if table not in schema_meta:
+            schema_meta[table] = {"label": entry.get("label") or table, "domain": entry.get("domain") or "기타"}
     return result.markdown
 
 

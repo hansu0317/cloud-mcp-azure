@@ -171,6 +171,7 @@ export default function App() {
       {showInstructions && activeProject && (
         <InstructionsModal
           projectName={activeProject.name}
+          projectTables={activeProject.tables ?? []}
           instructions={activeProject.instructions ?? EMPTY_INSTRUCTIONS}
           onSave={handleSaveInstructions}
           onClose={() => setShowInstructions(false)}
