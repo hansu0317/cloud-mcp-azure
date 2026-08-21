@@ -16,6 +16,7 @@ interface Props {
   onRenameProject: (id: string, name: string) => void
   onDeleteProject: (id: string) => void
   onSelectTables:  (projectId: string, tables: string[]) => void   // 프로젝트별 테이블 스코프 변경
+  onReorderProjects: (orderedIds: string[]) => void                // ▲▼로 만든 새 전체 순서
 }
 
 // 프로젝트 목록 — 테이블 스코프는 목록에 항상 펼쳐 두지 않고, Databricks Genie의
@@ -23,7 +24,7 @@ interface Props {
 // 그 모달이 뜨고, 이후에는 각 행의 "＋ 테이블" 버튼으로 언제든 다시 열어 추가/해제한다.
 export default function Sidebar({
   collapsed, projects, activeProjectId,
-  onSwitchProject, onCreateProject, onRenameProject, onDeleteProject, onSelectTables,
+  onSwitchProject, onCreateProject, onRenameProject, onDeleteProject, onSelectTables, onReorderProjects,
 }: Props) {
   const [catalog,     setCatalog]     = useState<CatalogGroup[]>([])
   const [refreshing,  setRefreshing]  = useState(false)
@@ -33,6 +34,9 @@ export default function Sidebar({
   const [renamingId,     setRenamingId]      = useState<string | null>(null)
   const [renameVal,      setRenameVal]       = useState('')
   const [editingProject, setEditingProject]  = useState<ProjectSummary | null>(null)   // 테이블 선택 모달 대상
+  const [search,         setSearch]          = useState('')
+  const [dragId,         setDragId]          = useState<string | null>(null)
+  const [dragOverId,     setDragOverId]      = useState<string | null>(null)
 
   const sbRef      = useRef<HTMLDivElement>(null)
   const resizerRef = useRef<HTMLDivElement>(null)
@@ -114,8 +118,48 @@ export default function Sidebar({
     }
   }
 
+  const query = search.trim().toLowerCase()
+  const visibleProjects = query ? projects.filter(p => p.name.toLowerCase().includes(query)) : projects
+
+  // ▲▼는 검색으로 걸러진 목록이 아니라 항상 전체 목록(projects) 기준으로 이웃과
+  // 자리를 바꾼다 — 검색 중엔 안 보이는 프로젝트가 사이에 끼어있을 수 있어서,
+  // 화면에 보이는 이웃과 바꾸면 순서가 뒤죽박죽될 수 있다(그래서 검색 중엔 버튼을
+  // 아예 숨긴다 — 아래 렌더링 참고).
+  const moveProject = (id: string, delta: -1 | 1) => {
+    const index = projects.findIndex(p => p.id === id)
+    const swapWith = index + delta
+    if (index < 0 || swapWith < 0 || swapWith >= projects.length) return
+    const ids = projects.map(p => p.id)
+    ;[ids[index], ids[swapWith]] = [ids[swapWith], ids[index]]
+    onReorderProjects(ids)
+  }
+
+  // 실제 드래그로 순서 바꾸기 — ▲▼와 마찬가지로 항상 전체 목록(projects) 기준으로
+  // 계산한다. draggable은 검색 중엔 꺼둔다(row.draggable={!query}) — 검색으로 걸러진
+  // 화면 순서와 실제 저장 순서가 달라서 드래그 결과가 헷갈릴 수 있어서다.
+  const handleDrop = (targetId: string) => {
+    const from = dragId
+    setDragId(null)
+    setDragOverId(null)
+    if (!from || from === targetId) return
+    const ids = projects.map(p => p.id)
+    const fromIndex = ids.indexOf(from)
+    const toIndex = ids.indexOf(targetId)
+    if (fromIndex < 0 || toIndex < 0) return
+    ids.splice(fromIndex, 1)
+    ids.splice(toIndex, 0, from)
+    onReorderProjects(ids)
+  }
+
+  // .body의 자식으로 항상 "요소 하나"만 내놓는다(Fragment로 여러 개를 흘리지 않음) —
+  // 예전엔 <>.sidebar, .sb-resizer, (조건부)TableScopeModal</> 세 조각을 Fragment로
+  // 반환했는데, React가 .body의 다음 형제(키가 바뀌는 NotebookView/InstructionsPanel)를
+  // 리마운트 대신 계속 추가만 하고 이전 걸 정리 안 하는 문제가 있었다(재현: 프로젝트를
+  // 전환할 때마다 .notebook-view가 쌓임). TableScopeModal은 createPortal이라 어디에
+  // 두든 실제 DOM 위치엔 영향 없으므로, 이 wrapper 안에 그냥 같이 넣어서 Sidebar가
+  // .body 입장에서 형제 노드 하나로만 보이게 만든다.
   return (
-    <>
+    <div className="sidebar-group">
       <div className={`sidebar${collapsed ? ' collapsed' : ''}`} ref={sbRef}>
         <div className="sb-body">
           <div className="cat-conn">
@@ -157,10 +201,33 @@ export default function Sidebar({
             <button className="btn btn-sm primary" onClick={submitCreate} disabled={!newName.trim()}>추가</button>
           </div>
 
-          {projects.length === 0 && <div className="sb-empty">프로젝트가 없습니다</div>}
+          {projects.length > 3 && (
+            <div className="proj-search-row">
+              <input
+                className="proj-new-input"
+                placeholder="🔍 프로젝트 검색…"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+              />
+            </div>
+          )}
 
-          {projects.map(p => (
-            <div className={`proj-row${p.id === activeProjectId ? ' active' : ''}`} key={p.id}>
+          {projects.length === 0 && <div className="sb-empty">프로젝트가 없습니다</div>}
+          {projects.length > 0 && visibleProjects.length === 0 && <div className="sb-empty">일치하는 프로젝트가 없습니다</div>}
+
+          {visibleProjects.map(p => {
+            const fullIndex = projects.findIndex(pr => pr.id === p.id)
+            return (
+            <div
+              className={`proj-row${p.id === activeProjectId ? ' active' : ''}${dragOverId === p.id ? ' drag-over' : ''}`}
+              key={p.id}
+              draggable={!query}
+              onDragStart={e => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move' }}
+              onDragOver={e => { if (!query && dragId) { e.preventDefault(); if (dragOverId !== p.id) setDragOverId(p.id) } }}
+              onDragLeave={() => setDragOverId(prev => (prev === p.id ? null : prev))}
+              onDrop={e => { e.preventDefault(); handleDrop(p.id) }}
+              onDragEnd={() => { setDragId(null); setDragOverId(null) }}
+            >
               {renamingId === p.id ? (
                 <input
                   className="proj-rename-input"
@@ -172,6 +239,7 @@ export default function Sidebar({
                 />
               ) : (
                 <div className="proj-row-main" onClick={() => onSwitchProject(p.id)}>
+                  {!query && <span className="proj-drag-handle" title="드래그해서 순서 바꾸기">⠿</span>}
                   <span className="proj-icon">📁</span>
                   <span className="proj-name">{p.name}</span>
                   <button
@@ -184,12 +252,29 @@ export default function Sidebar({
                 </div>
               )}
               <div className="proj-acts">
+                {!query && (
+                  <>
+                    <button
+                      className="btn-xs proj-act-btn" title="위로 이동"
+                      onClick={() => moveProject(p.id, -1)} disabled={fullIndex <= 0}
+                    >
+                      ▲
+                    </button>
+                    <button
+                      className="btn-xs proj-act-btn" title="아래로 이동"
+                      onClick={() => moveProject(p.id, 1)} disabled={fullIndex >= projects.length - 1}
+                    >
+                      ▼
+                    </button>
+                  </>
+                )}
                 <button className="btn-xs proj-act-btn" title="테이블 추가/변경" onClick={() => setEditingProject(p)}>＋</button>
                 <button className="btn-xs proj-act-btn" title="이름 변경" onClick={() => startRename(p)}>✎</button>
                 <button className="btn-xs proj-act-btn danger" title="삭제" onClick={() => handleDelete(p)}>🗑</button>
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
       </div>
       <div className="sb-resizer" ref={resizerRef} />
@@ -203,6 +288,6 @@ export default function Sidebar({
           onConfirm={tables => { onSelectTables(editingProject.id, tables); setEditingProject(null) }}
         />
       )}
-    </>
+    </div>
   )
 }

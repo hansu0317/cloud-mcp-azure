@@ -76,13 +76,22 @@ export async function deleteProject(id: string): Promise<void> {
   await fetch(`${API.PROJECTS}/${id}`, { method: 'DELETE' })
 }
 
+// 사이드바 위/아래 버튼으로 만든 새 전체 순서를 그대로 보낸다 — 서버가 각 프로젝트의
+// order를 배열 인덱스로 다시 쓴다(projects.py의 reorder_projects 참고).
+export async function reorderProjects(orderedIds: string[]): Promise<ProjectSummary[]> {
+  const { projects } = await fetch(`${API.PROJECTS}/reorder`, {
+    method:  'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ order: orderedIds }),
+  }).then(r => r.json()) as { projects: ProjectSummary[] }
+  return projects
+}
+
 // ─── 지침 (조인 관계·용어·예시) — 2026-08-12부터 프로젝트별로 분리, updateProject로 저장 ──
 // (예전엔 전역 POST /api/instructions 하나였음 — 프로젝트마다 다른 few-shot이 서로
-// 섞여 들어가는 문제가 있어 폐기. InstructionsModal은 이제 activeProject.instructions를
+// 섞여 들어가는 문제가 있어 폐기. InstructionsPanel은 activeProject.instructions를
 // 받아 updateProject(id, { instructions })로 저장한다 — App.tsx의 handleSaveInstructions 참고.)
-
-// 실제 질문/답변 로그에서 뽑은 terms·examples 후보를 가져온다(저장은 안 됨 — 모달에
-// 미리 채워 보여주고 사람이 검토 후 저장). joins는 서버가 항상 빈 배열로 준다.
-export async function getInstructionsDraft(): Promise<Instructions> {
-  return fetch(API.INSTRUCTIONS_DRAFT).then(r => r.json()) as Promise<Instructions>
-}
+//
+// 로그를 훑어 한 번에 채우던 전역 초안 생성(GET /api/instructions/draft)은 뺐다 —
+// 조인은 다이어그램에서 클릭으로, 용어는 "정의 필요" 목록에서, 예시는 "노트북에서
+// 가져오기"에서 각 탭이 이미 자기 프로젝트 범위의 후보를 보여줘서 중복이었다.

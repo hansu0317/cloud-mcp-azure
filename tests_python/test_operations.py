@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 from backend import main
-from backend.instructions_draft import _draft_examples, _draft_joins
 from backend.logger import _TimedSizedRotatingFileHandler, read_json_log_tail
 
 
@@ -91,72 +90,6 @@ class OperationContractTests(unittest.TestCase):
         with patch.object(Path, "read_text", side_effect=AssertionError("whole-file read")):
             entries = read_json_log_tail(3, path=path)
         self.assertEqual([entry["index"] for entry in entries], [997, 998, 999])
-
-    def test_draft_examples_exclude_failed_and_describe_only(self) -> None:
-        entries = [
-            {"category": "API-질문", "message": "A", "data": {"requestId": "a"}},
-            {"category": "API-쿼리", "message": "[dataverse_describe_table]", "data": {"requestId": "a", "tool": "dataverse_describe_table", "error": False}},
-            {"category": "API-답변", "message": "답 A", "data": {"requestId": "a", "successfulDataverseQueries": 0}},
-            {"category": "API-질문", "message": "B", "data": {"requestId": "b"}},
-            {"category": "API-쿼리", "message": "[dataverse_query]", "data": {"requestId": "b", "tool": "dataverse_query", "error": True}},
-            {"category": "API-답변", "message": "답 B", "data": {"requestId": "b", "successfulDataverseQueries": 0}},
-            {"category": "API-질문", "message": "C", "data": {"requestId": "c"}},
-            {"category": "API-쿼리", "message": "[dataverse_query]", "data": {"requestId": "c", "tool": "dataverse_query", "error": False}},
-            {"category": "API-답변", "message": "답 C", "data": {"requestId": "c", "successfulDataverseQueries": 1}},
-        ]
-        self.assertEqual(_draft_examples(entries), [{"question": "C", "answer": "답 C"}])
-
-    def test_draft_joins_only_include_cataloged_targets(self) -> None:
-        schema_data = {
-            "opportunity": {"lookups": {"customerid": ["account", "contact"], "ownerid": ["systemuser"]}},
-            "account": {},
-            # "contact"와 "systemuser"는 카탈로그에 없음 — 후보에서 빠져야 한다.
-        }
-        self.assertEqual(
-            _draft_joins(schema_data),
-            [{"fromTable": "opportunity", "fromCol": "customerid", "toTable": "account", "toCol": "accountid", "label": ""}],
-        )
-
-    def test_draft_joins_exclude_self_reference_and_dedupe(self) -> None:
-        schema_data = {
-            "account": {"lookups": {"parentaccountid": ["account"]}},  # 자기 자신 참조는 제외
-            "opportunity": {"lookups": {"customerid": ["account"], "parentcontactid": ["account"]}},
-        }
-        joins = _draft_joins(schema_data)
-        self.assertEqual(
-            sorted(joins, key=lambda j: j["fromCol"]),
-            [
-                {"fromTable": "opportunity", "fromCol": "customerid", "toTable": "account", "toCol": "accountid", "label": ""},
-                {"fromTable": "opportunity", "fromCol": "parentcontactid", "toTable": "account", "toCol": "accountid", "label": ""},
-            ],
-        )
-
-    def test_draft_joins_respects_max_n_and_ignores_malformed_entries(self) -> None:
-        schema_data = {
-            "t0": {"lookups": {"fk": ["target"]}},
-            "target": {},
-            "bad1": "not-a-dict",
-            "bad2": {"lookups": "not-a-dict"},
-            "bad3": {"lookups": {"fk": "not-a-list"}},
-        }
-        self.assertEqual(_draft_joins(schema_data, max_n=1), _draft_joins(schema_data))
-        self.assertEqual(len(_draft_joins(schema_data, max_n=1)), 1)
-
-    def test_get_instructions_draft_endpoint_reads_cached_schema_lookups(self) -> None:
-        schema_data = {
-            "opportunity": {"lookups": {"customerid": ["account"]}},
-            "account": {},
-        }
-        with (
-            patch.object(main, "_read_json_file", return_value=schema_data),
-            patch("backend.instructions_draft._read_log_entries", return_value=[]),
-        ):
-            response = self.request("GET", "/api/instructions/draft")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.json()["joins"],
-            [{"fromTable": "opportunity", "fromCol": "customerid", "toTable": "account", "toCol": "accountid", "label": ""}],
-        )
 
     def test_describe_write_failure_does_not_mutate_memory_cache(self) -> None:
         previous = main.schema_cache.get("account")

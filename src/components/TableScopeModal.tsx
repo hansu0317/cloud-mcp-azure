@@ -69,9 +69,7 @@ export default function TableScopeModal({ projectName, catalog, initialTables, o
             onChange={e => setQuery(e.target.value)}
             autoFocus
           />
-          <span className="ts-selected-count">
-            {selected.length > 0 ? `${selected.length}개 선택됨` : '전체(미선택 — 모든 테이블 조회 가능)'}
-          </span>
+          <span className="ts-selected-count">{selected.length}개 선택됨</span>
         </div>
 
         <div className="ts-modal-body">

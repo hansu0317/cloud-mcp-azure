@@ -10,32 +10,25 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 .logo-text { font-size: 14px; font-weight: 700; color: #f1f5f9; }
 .h-div { width: 1px; height: 18px; background: #1e2533; margin: 0 6px; }
 .h-spacer { flex: 1; }
-.ds-tabs { display: flex; gap: 2px; background: #0f1117; border: 1px solid #1e2533; border-radius: 6px; padding: 2px; }
-.ds-tab { padding: 4px 11px; border-radius: 4px; border: none; font-size: 11px; font-weight: 600; cursor: pointer; background: transparent; color: #475569; transition: all 0.15s; font-family: inherit; }
-.ds-tab:hover:not(.active) { color: #94a3b8; }
-.ds-tab.active.dv { background: #0d1a2e; color: #60a5fa; }
-.ds-tab.active.pg { background: #0d2010; color: #4ade80; }
 .btn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px; border-radius: 6px; border: 1px solid #2a3144; background: transparent; color: #94a3b8; font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s; white-space: nowrap; font-family: inherit; }
 .btn:hover { border-color: #6366f1; color: #a5b4fc; background: #1a1f30; }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn.primary { background: #6366f1; border-color: #6366f1; color: #fff; }
 .btn.primary:hover { background: #5558e3; border-color: #5558e3; }
+.btn.active { border-color: #6366f1; color: #a5b4fc; background: #1a1f30; }
 .btn.danger:hover { border-color: #f87171; color: #f87171; background: #1a0a0a; }
 .btn-xs { padding: 2px 7px; font-size: 11px; border-radius: 4px; }
 .btn-sm { padding: 3px 9px; font-size: 11px; }
 .nb-only { display: flex; gap: 4px; }
-.proj-indicator { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-indicator { width: 220px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Body */
 .body { flex: 1; display: flex; overflow: hidden; }
 
 /* Sidebar */
+.sidebar-group { display: flex; flex-shrink: 0; }   /* Sidebar가 .body에 요소 하나로만 보이게 하는 래퍼 — 안쪽 배치는 그대로 flex row */
 .sidebar { width: 260px; flex-shrink: 0; background: #0a0e18; border-right: 1px solid #1e2533; display: flex; flex-direction: column; overflow: hidden; transition: width 0.2s; }
 .sidebar.collapsed { width: 0; border-right: none; }
-.sb-tabs { display: flex; border-bottom: 1px solid #1e2533; flex-shrink: 0; }
-.sb-tab { flex: 1; padding: 8px 4px; background: none; border: none; border-bottom: 2px solid transparent; color: #475569; font-size: 11px; font-weight: 500; cursor: pointer; font-family: inherit; transition: all 0.15s; }
-.sb-tab:hover:not(.active) { color: #94a3b8; }
-.sb-tab.active { color: #a5b4fc; border-bottom-color: #6366f1; }
 .sb-body { flex: 1; overflow-y: auto; padding: 4px 0; }
 .sb-resizer { width: 4px; flex-shrink: 0; cursor: col-resize; background: transparent; }
 .sb-resizer:hover, .sb-resizer.active { background: #6366f1; }
@@ -67,12 +60,16 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 
 /* 프로젝트 목록 — 테이블 스코프는 목록에 펼쳐두지 않고 TableScopeModal 팝업에서 고른다 */
 .proj-new-row { display: flex; gap: 5px; padding: 6px 10px 10px; }
+.proj-search-row { padding: 0 10px 8px; }
 .proj-new-input { flex: 1; min-width: 0; padding: 5px 8px; font-size: 11.5px; background: #0d1120; border: 1px solid #1e2533; border-radius: 4px; color: #e2e8f0; font-family: inherit; }
 .proj-new-input:focus { outline: none; border-color: #6366f1; }
 
-.proj-row { display: flex; align-items: center; gap: 4px; padding: 2px 6px 2px 10px; border-radius: 6px; margin: 0 4px 1px; }
+.proj-row { display: flex; align-items: center; gap: 4px; padding: 2px 6px 2px 10px; border-radius: 6px; margin: 0 4px 1px; border-top: 2px solid transparent; }
 .proj-row:hover { background: #0d1120; }
 .proj-row.active { background: #131a3a; }
+.proj-row.drag-over { border-top-color: #6366f1; }
+.proj-drag-handle { flex-shrink: 0; color: #334155; font-size: 11px; cursor: grab; opacity: 0; transition: opacity 0.1s; }
+.proj-row:hover .proj-drag-handle { opacity: 1; }
 .proj-row-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 6px 0; cursor: pointer; }
 .proj-icon { font-size: 12px; flex-shrink: 0; }
 .proj-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: #cbd5e1; font-weight: 500; }
@@ -85,6 +82,8 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 .proj-act-btn { background: transparent; border: none; color: #475569; cursor: pointer; padding: 4px 5px; border-radius: 4px; font-size: 11px; }
 .proj-act-btn:hover { background: #1a2030; color: #a5b4fc; }
 .proj-act-btn.danger:hover { color: #f87171; }
+.proj-act-btn:disabled { opacity: 0.25; cursor: not-allowed; }
+.proj-act-btn:disabled:hover { background: transparent; color: #475569; }
 .proj-rename-input { flex: 1; min-width: 0; margin: 3px 0; padding: 4px 7px; font-size: 12px; background: #0a0e18; border: 1px solid #6366f1; border-radius: 4px; color: #e2e8f0; font-family: inherit; }
 .proj-rename-input:focus { outline: none; }
 
@@ -104,9 +103,14 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 .ts-modal-body { flex: 1; overflow-y: auto; padding: 6px 4px; }
 .ts-modal-ftr { display: flex; align-items: center; gap: 8px; padding: 11px 16px; border-top: 1px solid #1e2533; flex-shrink: 0; }
 
-/* 지침 설정(InstructionsModal) — .ts-modal* 셸을 그대로 재사용, 탭+행 목록만 추가 */
-.instr-modal-inner { max-width: 720px; }
-.instr-modal-body { padding: 10px 16px 4px; }
+/* 지침 패널(InstructionsPanel) — 왼쪽 카탈로그 사이드바(.sidebar)와 대칭되는 오른쪽
+   상시 패널. 모달이 아니라 .body의 세 번째 flex 자식이라 border-left/collapse만
+   좌우 반전해서 .sidebar와 똑같이 움직인다. */
+.instr-panel { width: 360px; flex-shrink: 0; background: #0a0e18; border-left: 1px solid #1e2533; display: flex; flex-direction: column; overflow: hidden; transition: width 0.2s; }
+.instr-panel.collapsed { width: 0; border-left: none; }
+.instr-panel-hdr { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 14px 16px 12px; border-bottom: 1px solid #1e2533; flex-shrink: 0; }
+.instr-panel-body { flex: 1; overflow-y: auto; padding: 10px 16px 4px; }
+.instr-panel-ftr { display: flex; align-items: center; gap: 8px; padding: 11px 16px; border-top: 1px solid #1e2533; flex-shrink: 0; }
 .instr-tabs { display: flex; gap: 4px; padding: 8px 16px 0; border-bottom: 1px solid #1e2533; flex-shrink: 0; }
 .instr-tab { display: flex; align-items: center; gap: 5px; padding: 7px 12px; font-size: 12px; color: #64748b; background: transparent; border: none; border-bottom: 2px solid transparent; cursor: pointer; font-family: inherit; transition: all 0.15s; }
 .instr-tab:hover { color: #94a3b8; }
@@ -122,10 +126,6 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 .instr-row-del:hover { color: #f87171; background: #1a1020; }
 .instr-row-example { align-items: flex-start; }
 .instr-example-answer { color: #64748b; margin-top: 2px; }
-.instr-add-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px; margin-top: 4px; background: #0a0e18; border: 1px dashed #1e2533; border-radius: 6px; }
-.instr-input-sm { flex: 1 1 110px; min-width: 90px; }
-.instr-input-wide { flex: 2 1 180px; }
-.instr-arrow { flex-shrink: 0; color: #334155; font-size: 12px; }
 .instr-add-col { display: flex; flex-direction: column; gap: 6px; padding: 10px; margin-top: 4px; background: #0a0e18; border: 1px dashed #1e2533; border-radius: 6px; }
 .instr-textarea { padding: 7px 10px; font-size: 12px; background: #0d1120; border: 1px solid #1e2533; border-radius: 4px; color: #e2e8f0; font-family: inherit; resize: vertical; }
 .instr-textarea:focus { outline: none; border-color: #6366f1; }
@@ -146,12 +146,6 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 .instr-row-draft { background: #171310; border: 1px dashed #4a3a12; }
 .instr-row-draft:hover { background: #201a12; }
 
-/* 조인/용어 탭 — 단계별 드롭다운 위저드(테이블·컬럼 이름을 몰라도 순서대로 고르면 됨) */
-.instr-wizard { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
-.instr-step { display: flex; gap: 10px; padding: 10px; background: #0a0e18; border: 1px dashed #1e2533; border-radius: 6px; align-items: flex-start; animation: instr-step-in 0.15s ease; }
-.instr-step-num { flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%; background: #1e2542; color: #a5b4fc; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
-.instr-step-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.instr-step-q { font-size: 12px; color: #94a3b8; }
 .instr-select { width: 100%; padding: 7px 9px; font-size: 12px; background: #0d1120; border: 1px solid #1e2533; border-radius: 4px; color: #e2e8f0; font-family: inherit; }
 .instr-select:focus { outline: none; border-color: #6366f1; }
 .instr-step-add { align-self: flex-start; margin-top: 2px; }
@@ -159,9 +153,55 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 .instr-chip { font-size: 11px; padding: 4px 10px; border-radius: 999px; background: #0d1120; border: 1px solid #1e2533; color: #94a3b8; cursor: pointer; font-family: inherit; }
 .instr-chip:hover { border-color: #334155; color: #cbd5e1; }
 .instr-chip.active { background: #1e2542; border-color: #6366f1; color: #a5b4fc; }
-@keyframes instr-step-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
-.instr-hint-todo { color: #ca8a04; background: #1c1608; border-radius: 5px; padding: 6px 8px; margin: 0 10px 8px; }
 .instr-draft-msg { margin: 8px 16px 0; padding: 7px 10px; font-size: 11.5px; line-height: 1.5; color: #7dd3fc; background: #0d1a2e; border: 1px solid #17324d; border-radius: 6px; }
+
+/* 용어 탭 — 선택한 테이블의 컬럼을 나열해서 보여주는 방식(순차 드롭다운 위저드 대체).
+   Dataverse에 이미 설명이 있는 컬럼은 기본 접어두고, 없는 것만 우선 노출한다. */
+.instr-term-group { margin-top: 6px; }
+.instr-term-group-hdr { display: flex; align-items: center; gap: 8px; padding: 8px 4px 4px; font-size: 12px; font-weight: 600; color: #cbd5e1; }
+.instr-term-need-badge { font-size: 9.5px; font-weight: 700; color: #fbbf24; background: #1c1608; border-radius: 8px; padding: 1px 6px; }
+.instr-term-row-btn { width: 100%; display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 11.5px; color: #94a3b8; background: transparent; border: none; border-radius: 5px; cursor: pointer; text-align: left; font-family: inherit; }
+.instr-term-row-btn:hover { background: #0d1120; color: #cbd5e1; }
+.instr-term-row-col { flex-shrink: 0; font-family: 'Consolas', 'JetBrains Mono', monospace; font-size: 10.5px; color: #7dd3fc; }
+.instr-term-row-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.instr-term-row-plus { flex-shrink: 0; color: #334155; }
+.instr-term-active { padding: 8px 10px; margin: 2px 0; background: #0a0e18; border: 1px dashed #1e2533; border-radius: 6px; display: flex; flex-direction: column; gap: 6px; }
+.instr-term-active-hdr { font-size: 11.5px; color: #94a3b8; }
+.instr-term-active-hdr b { font-family: 'Consolas', 'JetBrains Mono', monospace; color: #7dd3fc; font-weight: 600; }
+.instr-term-covered { margin: 2px 0 8px; font-size: 11px; }
+.instr-term-covered summary { cursor: pointer; color: #475569; padding: 4px 6px; }
+.instr-term-covered summary:hover { color: #94a3b8; }
+
+/* 질문 예시 탭 — 노트북에서 실제로 실행해서 성공한 셀을 골라 오는 버튼 목록.
+   자유 입력 템플릿(.instr-chip)보다 신뢰도가 높다는 걸 보여주려고 색을 다르게 뒀다. */
+.instr-cellpick-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 10px 4px; }
+.instr-cellpick { font-size: 11px; padding: 4px 10px; border-radius: 999px; background: #0d1a12; border: 1px solid #16351f; color: #86efac; cursor: pointer; font-family: inherit; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.instr-cellpick:hover { border-color: #22c55e; color: #bbf7d0; }
+.instr-diagram-btn { margin: 8px 10px 0; }
+
+/* 테이블 연결 다이어그램(RelationshipDiagram) — Power BI 모델 뷰처럼 테이블을 박스로,
+   조인을 선으로 보여주는 전체화면 오버레이. 여기서 직접 클릭으로 연결도 만든다
+   (컬럼 클릭 → 대상 테이블 클릭). 좌표는 저장 안 하고 열 때마다 다시 계산한다. */
+.rdiag-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 300; display: flex; align-items: center; justify-content: center; }
+.rdiag-inner { background: #0a0e18; border: 1px solid #1e2533; border-radius: 10px; width: 94vw; height: 90vh; display: flex; flex-direction: column; }
+.rdiag-hdr { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 14px 16px 12px; border-bottom: 1px solid #1e2533; flex-shrink: 0; }
+.rdiag-body { flex: 1; overflow: auto; padding: 24px; }
+.rdiag-stage { position: relative; min-height: 100%; }
+.rdiag-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 0; }
+.rdiag-card { font-size: 10px; font-weight: 700; fill: #7dd3fc; font-family: 'Consolas', 'JetBrains Mono', monospace; }
+.rdiag-nodes { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 56px 120px; position: relative; z-index: 1; }
+.rdiag-node { width: 220px; flex-shrink: 0; background: #0d1120; border: 1px solid #2a3144; border-radius: 8px; padding: 10px 12px 6px; transition: border-color 0.15s, box-shadow 0.15s; }
+.rdiag-node-target { border-color: #22c55e; cursor: pointer; box-shadow: 0 0 0 1px #22c55e; }
+.rdiag-node-hdr { font-size: 13px; font-weight: 700; color: #e2e8f0; }
+.rdiag-node-name { font-size: 10.5px; color: #475569; font-family: 'Consolas', 'JetBrains Mono', monospace; margin-top: 1px; }
+.rdiag-node-self { margin-top: 6px; font-size: 10px; color: #fbbf24; background: #1c1608; border-radius: 4px; padding: 3px 6px; }
+.rdiag-node-empty { margin: 8px -12px 0; padding: 8px 12px 4px; font-size: 10.5px; color: #334155; border-top: 1px solid #1e2533; }
+.rdiag-node-cols { margin: 8px -12px 0; border-top: 1px solid #1e2533; }
+.rdiag-node-col { padding: 5px 12px; font-size: 11px; font-family: 'Consolas', 'JetBrains Mono', monospace; color: #64748b; border-bottom: 1px solid #161c2c; cursor: pointer; border-left: 2px solid transparent; }
+.rdiag-node-col:last-child { border-bottom: none; }
+.rdiag-node-col:hover { background: #131a2e; color: #cbd5e1; }
+.rdiag-node-col.used { color: #cbd5e1; border-left-color: #4f5b76; }
+.rdiag-node-col.armed { color: #fff; background: #1e2542; border-left-color: #6366f1; }
 
 /* Notebook */
 .notebook-view { flex: 1; display: flex; overflow: hidden; }
@@ -199,26 +239,6 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 /* Toast */
 .toast { position: fixed; bottom: 18px; right: 18px; z-index: 999; background: #131a2b; border: 1px solid #2a3a60; border-radius: 8px; padding: 9px 15px; font-size: 12px; color: #94a3b8; animation: toastIn 0.2s ease; }
 @keyframes toastIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
-
-/* Log Modal */
-.log-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 100; display: flex; align-items: center; justify-content: center; }
-.log-modal-inner { background: #0a0e18; border: 1px solid #1e2533; border-radius: 10px; width: 88vw; max-width: 1000px; height: 78vh; display: flex; flex-direction: column; }
-.log-modal-hdr { display: flex; justify-content: space-between; align-items: center; padding: 11px 14px; border-bottom: 1px solid #1e2533; font-size: 13px; font-weight: 600; color: #e2e8f0; flex-shrink: 0; }
-.log-filter-btn { background: #0f1117; border: 1px solid #1e2533; border-radius: 4px; color: #475569; font-size: 11px; padding: 3px 8px; cursor: pointer; font-family: inherit; transition: all 0.15s; }
-.log-filter-btn.active { background: #1a2a4a; border-color: #3b5bdb; color: #7aa2f7; }
-.log-filter-btn:hover:not(.active) { color: #94a3b8; }
-.log-modal-body { flex: 1; overflow-y: auto; font-family: 'Consolas', 'JetBrains Mono', monospace; font-size: 11.5px; }
-.log-entry { display: flex; gap: 8px; padding: 3px 12px; border-bottom: 1px solid #0a0d14; align-items: baseline; }
-.log-entry:hover { background: #0d1120; }
-.log-time { color: #334155; white-space: nowrap; flex-shrink: 0; font-size: 10.5px; }
-.log-level { width: 44px; flex-shrink: 0; font-weight: 700; font-size: 10px; }
-.log-level.info  { color: #38bdf8; }
-.log-level.warn  { color: #fbbf24; }
-.log-level.error { color: #f87171; }
-.log-level.tool  { color: #c084fc; }
-.log-cat { color: #475569; width: 78px; flex-shrink: 0; font-size: 10px; }
-.log-msg { color: #94a3b8; flex: 1; }
-.log-data { color: #334155; font-size: 10px; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 5px; height: 5px; }

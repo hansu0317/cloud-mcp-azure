@@ -35,6 +35,7 @@ from .logger import log
 from .projects import (
     get_project_history,
     get_project_instructions,
+    get_project_name,
     get_project_tables,
     project_exists,
     save_project_history,
@@ -618,7 +619,13 @@ def register_chat_api(app: Any) -> None:
             return StreamingResponse(missing_stream(), headers=SSE_HEADERS)
 
         request_id = uuid.uuid4().hex
-        log_context = {"requestId": request_id, "sessionId": session_id}
+        # projectName은 로그에서 사람이 눈으로 프로젝트를 구분하기 위한 용도(sessionId는
+        # 이미 project_id와 같은 값이라 필터링엔 충분하지만 UUID라 눈으로 못 읽음).
+        log_context = {
+            "requestId": request_id,
+            "sessionId": session_id,
+            "projectName": get_project_name(session_id),
+        }
 
         async def run_chat() -> None:
             session_lock: _SessionLock | None = None
@@ -674,7 +681,16 @@ def register_chat_api(app: Any) -> None:
                 log.info(
                     "API-질문",
                     _safe_text(message, 200),
-                    {**log_context, "successfulDataverseQueries": 0},
+                    {
+                        **log_context,
+                        "successfulDataverseQueries": 0,
+                        # 이 요청이 지침 몇 개를 참고했는지 — "지침 켠/끈 답변 비교" 분석용.
+                        "instructions": {
+                            "joins": len(instructions.get("joins") or []),
+                            "terms": len(instructions.get("terms") or []),
+                            "examples": len(instructions.get("examples") or []),
+                        },
+                    },
                 )
             except BaseException:
                 release()

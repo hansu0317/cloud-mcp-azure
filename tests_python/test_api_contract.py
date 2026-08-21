@@ -36,10 +36,13 @@ class FastApiContractTests(unittest.TestCase):
 
         self._old_schema_meta = dict(main.schema_meta)
         self._old_schema_cache = dict(main.schema_cache)
+        self._old_schema_lookups = dict(main.schema_lookups)
         main.schema_meta.clear()
         main.schema_meta.update({"account": {"label": "고객", "domain": "영업"}})
         main.schema_cache.clear()
         main.schema_cache.update({"account": "| 컬럼명 | 타입 | 설명 |"})
+        main.schema_lookups.clear()
+        main.schema_lookups.update({"contact": {"new_l_account": ["account"], "ownerid": ["systemuser"]}})
 
         # 예상치 못한 서버 예외도 HTTP 500 응답으로 관찰해 계약 실패로 명확히 표시한다.
         self.client = TestClient(main.app, raise_server_exceptions=False)
@@ -53,6 +56,8 @@ class FastApiContractTests(unittest.TestCase):
         main.schema_meta.update(self._old_schema_meta)
         main.schema_cache.clear()
         main.schema_cache.update(self._old_schema_cache)
+        main.schema_lookups.clear()
+        main.schema_lookups.update(self._old_schema_lookups)
         for item in reversed(self._patches):
             item.stop()
         shutil.rmtree(self.root, ignore_errors=True)
@@ -120,6 +125,40 @@ class FastApiContractTests(unittest.TestCase):
         self.assertEqual(deleted.status_code, 200)
         self.assertEqual(self.request("GET", f"/api/projects/{project_id}").status_code, 404)
 
+    def test_join_candidates_only_offers_fks_inside_project_table_scope(self) -> None:
+        # main.schema_meta는 setUp에서 "account" 하나만 등록해두므로, 이 테스트에서만
+        # "contact"를 더해 project.tables 유효성 검사(_validate_project_tables)를
+        # 통과시킨다 — tearDown이 매 테스트 후 schema_meta를 통째로 복원하므로 다른
+        # 테스트(schemaTables 개수 등)에 영향이 없다.
+        # main.schema_lookups: contact.new_l_account → account (스코프 안),
+        # contact.ownerid → systemuser (스코프 밖이자 시스템 엔터티라 제외 대상).
+        main.schema_meta["contact"] = {"label": "연락처", "domain": "영업"}
+        scoped = self.request(
+            "POST", "/api/projects", json={"name": "범위 있음", "tables": ["account", "contact"]},
+        ).json()
+        response = self.request("GET", f"/api/projects/{scoped['id']}/join-candidates")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["joins"],
+            [{"fromTable": "contact", "fromCol": "new_l_account", "toTable": "account", "toCol": "accountid", "label": ""}],
+        )
+
+        # 대상 테이블이 스코프 밖이면(contact 미포함) 후보가 없다.
+        no_target = self.request(
+            "POST", "/api/projects", json={"name": "대상 없음", "tables": ["account"]},
+        ).json()
+        self.assertEqual(
+            self.request("GET", f"/api/projects/{no_target['id']}/join-candidates").json(), {"joins": []},
+        )
+
+        # 스코프 미지정(전체 허용) 프로젝트는 카탈로그 전체로 커질 수 있어 건너뛴다.
+        unscoped = self.request("POST", "/api/projects", json={"name": "전체 허용"}).json()
+        self.assertEqual(
+            self.request("GET", f"/api/projects/{unscoped['id']}/join-candidates").json(), {"joins": []},
+        )
+
+        self.assertEqual(self.request("GET", "/api/projects/no-such-id/join-candidates").status_code, 404)
+
     def test_malformed_json_is_client_error_not_internal_error(self) -> None:
         response = self.request(
             "POST",
@@ -168,7 +207,6 @@ class FastApiContractTests(unittest.TestCase):
             ("GET", "/api/tables"),
             ("POST", "/api/schemas/refresh"),
             ("GET", "/api/describe"),
-            ("GET", "/api/instructions/draft"),
             ("GET", "/api/logs"),
             ("GET", "/api/health"),
         }

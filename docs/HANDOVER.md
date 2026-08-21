@@ -1,6 +1,10 @@
 # CRM AI Notebook 통합 인수인계서
 
-> 2026-08-13 기준, 신규 기능 개발 종료·유지보수 전환. 기준 런타임: React + TypeScript 프론트엔드 + Python/FastAPI 백엔드.
+> 2026-08-13 기준, 신규 기능 개발 종료·유지보수 전환. 2026-08-21에 "지침" UI(조인·용어·예시)를
+> 모달에서 상시 우측 패널 + 클릭 기반 관계 다이어그램으로 재작업했다(§3, §5, §12 참고) —
+> 프로덕트 스코프(§1.2, §9의 인증·쓰기 금지 등 보안 경계)는 그대로이고, "지침을 어떻게
+> 채우는가"라는 UX만 바뀐 유지보수성 개선이라 위 종료 선언과 배치되지 않는다. 기준 런타임:
+> React + TypeScript 프론트엔드 + Python/FastAPI 백엔드.
 
 **제품 코드의 기준은 `crm-ai-chat` 하나뿐이다.** Cloud/Local은 별도 저장소가 아니라 같은 코드에서 `LLM_PROVIDER` 값만 다른 두 배포 프로필이며, 동일한 Python/FastAPI와 프론트엔드를 사용하고 배포 환경의 LLM 제공자·모델·접속 정보와 활성 로그 파일만 다르다. (별도 저장소인 `crm-ai-chat-mcp`는 이 제품과 무관한 독립 MCP 서버다.)
 
@@ -52,8 +56,10 @@
 
 - 프로젝트 생성·조회·이름 변경·삭제
 - 프로젝트별 Dataverse 테이블 범위 설정
-- 프로젝트별 테이블 관계·업무 용어·질문 예시 지침 저장
-- 로그 기반 지침 초안 생성과 사람 검토 후 저장
+- 프로젝트별 테이블 관계·업무 용어·질문 예시 지침 저장(상시 우측 패널, 탭마다 자체 후보 —
+  조인은 관계 다이어그램에서 컬럼 클릭으로 생성, 용어는 Dataverse에 설명 없는 컬럼만 자동
+  후보로, 예시는 실제로 실행해 확인한 노트북 셀에서 가져옴 — 전역 로그 기반 "초안 생성"
+  버튼은 2026-08-21에 제거)
 - 질문 셀 추가·실행·전체 실행·삭제·자동 저장
 - LLM 도구 호출과 실제 OData 상대 경로 표시
 - Markdown 답변, 표 CSV 및 일반 답변 TXT 내보내기
@@ -99,7 +105,6 @@ flowchart LR
         CHAT --> GUARD["프로젝트 범위 + OData guard"]
         API --> PROJECTS["프로젝트 저장소"]
         API --> SCHEMA["스키마 캐시"]
-        API --> DRAFT["지침 초안"]
         API --> LOG["프로필 로그"]
     end
 
@@ -154,12 +159,12 @@ flowchart LR
 | `UI-01` | 메인 노트북 | `/` | 셀 실행·전체 실행·추가, 프로젝트 전환 |
 | `UI-02` | 프로젝트 사이드바 | 좌측 패널 | 프로젝트 CRUD, 테이블 범위, 스키마 갱신 |
 | `UI-03` | 테이블 선택 | 프로젝트의 테이블 수/추가 버튼 | 검색·도메인 필터·전체/개별 선택 |
-| `UI-04` | 프로젝트별 지침 | 헤더 `지침` | 관계·용어·예시 편집, 공통 초안 생성 |
+| `UI-04` | 프로젝트별 지침 | 헤더 `지침` 토글(왼쪽 카탈로그 사이드바와 대칭되는 오른쪽 상시 패널) | 조인은 스키마 FK 기반 자동 후보(클릭 한 번으로 추가) + "🗺 다이어그램으로 연결하기"(컬럼 클릭 → 대상 테이블 클릭, 시스템 감사·소유권 컬럼은 표시에서 제외), 용어는 설명 없는 컬럼만 후보로 보여주는 목록, 예시는 노트북에서 실제로 실행해 확인한 셀을 가져오거나 질문·답변을 직접 입력 |
 | `UI-05` | 질문 셀 | 노트북 반복 항목 | 입력·실행·상태·답변·쿼리·내보내기 |
 
 (과거 `UI-06` 서버 로그 화면은 메뉴에 연결된 적 없는 미완성 컴포넌트였다. 2026-08-18 정리에서 `src/components/LogModal.tsx`를 삭제했다 — `/api/logs`는 API로는 남아 있고 화면만 없다.)
 
-UI는 Cloud/Local에서 같으며 제공자 이름은 연결 환경 표시와 응답 특성에만 영향을 준다. 지침 초안 버튼과 `/api/instructions/draft`도 두 프로필에서 같다.
+UI는 Cloud/Local에서 같으며 제공자 이름은 연결 환경 표시와 응답 특성에만 영향을 준다.
 
 ---
 
@@ -235,22 +240,28 @@ sequenceDiagram
 
 ## 5. HTTP API
 
-두 프로필 모두 아래 12개를 같은 URI와 계약으로 제공한다.
+두 프로필 모두 아래 13개를 같은 URI와 계약으로 제공한다.
 
 | No. | Method | URI | 목적 |
 |---:|:---:|---|---|
 | 1 | POST | `/api/chat` | LLM·Dataverse 도구 루프, SSE 응답 |
 | 2 | GET | `/api/projects` | 프로젝트 요약 목록 |
 | 3 | POST | `/api/projects` | 프로젝트 생성 |
-| 4 | GET | `/api/projects/{project_id}` | 프로젝트 상세(history 제외) |
-| 5 | PATCH | `/api/projects/{project_id}` | 이름·테이블·지침·셀 수정 |
-| 6 | DELETE | `/api/projects/{project_id}` | 프로젝트 즉시 삭제 |
-| 7 | GET | `/api/tables` | 등록 테이블 카탈로그 |
-| 8 | POST | `/api/schemas/refresh` | 기존 카탈로그의 메타데이터 갱신 |
-| 9 | GET | `/api/describe?table=...` | 스키마 조회·캐시 |
-| 10 | GET | `/api/logs?n=...` | 활성 프로필 최신 로그 |
-| 11 | GET | `/api/health` | 앱·LLM·Dataverse 설정·동시성 상태 |
-| 12 | GET | `/api/instructions/draft` | 활성 로그 기반 지침 후보 생성 |
+| 4 | PUT | `/api/projects/reorder` | 사이드바에서 옮긴 프로젝트 순서 저장 |
+| 5 | GET | `/api/projects/{project_id}` | 프로젝트 상세(history 제외) |
+| 6 | PATCH | `/api/projects/{project_id}` | 이름·테이블·지침·셀 수정 |
+| 7 | DELETE | `/api/projects/{project_id}` | 프로젝트 즉시 삭제 |
+| 8 | GET | `/api/projects/{project_id}/join-candidates` | 스키마 FK 기반 조인 후보 계산(저장 안 함) |
+| 9 | GET | `/api/tables` | 등록 테이블 카탈로그 |
+| 10 | POST | `/api/schemas/refresh` | 기존 카탈로그의 메타데이터 갱신 |
+| 11 | GET | `/api/describe?table=...` | 스키마 조회·캐시 |
+| 12 | GET | `/api/logs?n=...` | 활성 프로필 최신 로그 |
+| 13 | GET | `/api/health` | 앱·LLM·Dataverse 설정·동시성 상태 |
+
+(2026-08-21에 `GET /api/instructions/draft`를 제거했다 — 로그 전체를 훑어 조인·용어·예시를
+한 번에 채우던 전역 기능이 프로젝트 스코프 밖이라는 문제가 있었고, 각 지침 탭이 이제
+자기 프로젝트 범위의 후보를 직접 보여줘서 중복이었다: 조인은 관계 다이어그램, 용어는
+"정의 필요" 컬럼 목록, 예시는 노트북 셀 가져오기. `backend/instructions_draft.py`도 같이 삭제.)
 
 ### 5.1 채팅 SSE 이벤트
 
@@ -400,7 +411,8 @@ Vite는 기본 5173, FastAPI/Uvicorn은 `PORT`를 사용하며 프록시는 `VIT
 3. 프로젝트 목록과 기존 셀이 복원되는지 확인한다.
 4. `dataverse_describe_table`이 필요한 질문과 실제 행 조회 질문을 각각 실행한다.
 5. Cloud는 `server.cloud.log`, Local은 `server.local.log`에 기록되는지 확인한다.
-6. 지침 초안이 현재 프로필 로그만 읽고 자동 저장하지 않는지 확인한다.
+6. 지침 패널에서 "정의 필요"/미완성 예시가 있는 채로 저장을 눌러도 그 항목은 저장되지 않고
+   화면에 남는지 확인한다(완전한 항목만 저장 — `InstructionsPanel.tsx`의 `handleSave` 참고).
 
 ### 8.3 운영 스크립트와 배포 검증 명령
 
@@ -473,13 +485,13 @@ Local Ollama와 Dataverse가 준비된 환경에서는 `npm run test:e2e:safe`(`
 3. 프로젝트 삭제는 즉시 파일 삭제이며 휴지통·버전 이력이 없다.
 4. 전체 스키마 갱신은 기존 카탈로그 키만 처리하고 새 테이블을 발견하지 않는다.
 5. 명시된 최상위 `$top`은 100으로 제한하지만 `$expand` 내부 관계 깊이·행수는 완전한 OData parser 수준으로 통제하지 않는다. 대신 Dataverse 응답과 LLM 도구 결과에 별도 바이트 상한을 적용한다.
-6. 로그 초안은 단순 휴리스틱이며 잘못된 용어·답변을 만들 수 있어 반드시 사람 검토가 필요하다.
+6. 지침의 조인/용어/예시 후보는 스키마·노트북 실행 결과 등 검증 가능한 근거에서만 만들어지지만(§0.1 참고), 실제로 채우는 내용(용어 정의, 예시 답변)은 여전히 사람이 입력하므로 잘못 채워질 수 있다 — 저장 전 검토가 필요하다.
 
 ### P2 — 유지보수
 
 1. 레거시 디렉터리가 남으면 현행 구현으로 오해할 수 있다.
 2. Local mirror는 자동 동기화되지 않으므로 revision 확인 없이 운영하면 코드가 드리프트할 수 있다.
-3. 자동 테스트 43개는 provider, 실제 FastAPI SSE 도구 루프, 동시성·rollback, 프로젝트·history 비노출, OData/Dataverse 경계, 파일·로그 내구성과 API 계약을 다루지만 UI·Anthropic 실환경 회귀를 모두 보장하지 않는다.
+3. 자동 테스트(2026-08-21 기준 46개, `npm test`)는 provider, 실제 FastAPI SSE 도구 루프, 동시성·rollback, 프로젝트·history 비노출, OData/Dataverse 경계, 파일·로그 내구성과 API 계약을 다루지만 UI·Anthropic 실환경 회귀를 모두 보장하지 않는다.
 4. Cloud/Local 두 프로필이 같은 코드를 공유하므로, 한쪽 프로필만 검증하고 배포하면 다른 프로필의 회귀를 놓칠 수 있다.
 5. 앱 LICENSE·운영 책임자·SLA는 저장소에서 확정되지 않았다.
 
@@ -510,3 +522,30 @@ Local Ollama와 Dataverse가 준비된 환경에서는 `npm run test:e2e:safe`(`
 
 - 2026-08-14: `specifications/` 9종 삭제, 이 문서(당시 `FINAL_HANDOVER.md`)로 통합.
 - 2026-08-18: 문서를 `docs/HANDOVER.md`로 이동하고 `DEPLOYMENT.md`를 흡수 삭제(§8.3에 운영 스크립트·배포 검증 명령 병합). `tests_py/`를 `tests_python/`으로 통합. 미연결 상태였던 `UI-06`(`LogModal.tsx`) 삭제. `crm-ai-chat-local-llm` mirror가 이미 폐기된 사실을 반영해 §0.3·§10의 잔여 mirror 언급을 정정. 상세 배포 시나리오는 [DEPLOYMENT_OPTIONS.md](DEPLOYMENT_OPTIONS.md), Notion 대조 결과는 [NOTION.md](NOTION.md) 참고.
+- 2026-08-21: "지침" UI를 모달(`InstructionsModal.tsx`)에서 왼쪽 카탈로그 사이드바와 대칭되는
+  상시 우측 패널(`InstructionsPanel.tsx`)로 전환. 조인 탭에 클릭 기반 관계 다이어그램
+  (`RelationshipDiagram.tsx` — 컬럼 클릭 → 대상 테이블 클릭으로 조인 생성, 4단계 드롭다운
+  위저드 삭제)을 추가. 용어 탭은 Dataverse에 설명이 없는 컬럼만 후보로 보여주는 방식으로
+  교체(타입이 코드값을 가질 수 있는 Boolean만 대상 — Picklist/State/Status는 이미 옵션으로
+  자체 설명됨). 예시는 실제로 노트북에서 실행해 확인한 셀(질문·답변·조회 쿼리)을 가져오거나
+  직접 입력하는 방식으로 교체하고 로그 답변 텍스트를 그대로 신뢰하던 기존 방식은 제거.
+  이에 따라 전역 로그 기반 `GET /api/instructions/draft`(`backend/instructions_draft.py`)를
+  삭제 — 각 탭이 이미 자기 프로젝트 범위의 후보를 보여줘서 중복이었음. 프로젝트 전환 시
+  `App.tsx`의 `NotebookView`/`InstructionsPanel`가 동일한 `key` 문자열(`activeProject.id`)을
+  공유해 이전 노트북이 정리(unmount)되지 않고 계속 쌓이던 버그를 발견해 각각
+  `nb-${id}`/`ip-${id}`로 분리해 수정(Playwright로 재현·검증). 자동 테스트 50→45개
+  (draft 관련 테스트 5개 삭제).
+
+  같은 날 이어서: 조인 탭에 스키마 FK 기반 자동 후보(`GET /api/projects/{id}/join-candidates`
+  — `schema.json`의 `lookups`를 메모리 캐시(`schema_lookups`, `reload_from_schema_file()`/
+  `describe_table()`에서 갱신)로 훑어 프로젝트 테이블 스코프 "안에서만" 연결되는 FK를
+  계산, 저장은 안 하고 매번 새로 계산만 함)를 추가해 다이어그램을 열지 않아도 대부분의
+  실제 관계가 카드로 바로 뜨게 함. `RelationshipDiagram.tsx`가 보여주는 Lookup 컬럼에서
+  `createdby`/`ownerid`/`transactioncurrencyid` 같은 시스템 감사·소유권 컬럼을
+  제외(`src/lib/schemaColumns.ts`의 `NOISE_COLUMN_RE` — 용어 탭과 공유)해 테이블 상자당
+  실제 업무 관계(`new_l_*`)보다 시스템 컬럼이 더 많아 보이던 문제를 줄임. 예시 탭에서
+  "실제 조회 쿼리" 입력칸을 제거하고 질문·답변 두 가지만 받도록 단순화(백엔드
+  `_instruction_prompt()`의 "조회 쿼리:" 줄도 같이 제거). 상시 패널이라 "닫기=취소"가
+  아니라는 원 설계 의도와 달리 실사용에 필요 없다고 판단된 "되돌리기"(마지막 저장 상태로
+  전체 되돌리기) 버튼 제거 — 개별 항목 삭제(×)로 충분. 자동 테스트 45→46개
+  (`test_join_candidates_only_offers_fks_inside_project_table_scope` 추가).

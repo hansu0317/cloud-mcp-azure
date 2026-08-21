@@ -32,7 +32,6 @@ if sys.version_info < (3, 11):
 from .chat_api import api_status, cleanup_loop, provider_health, provider_status, register_chat_api
 from . import dataverse, projects
 from .dataverse import dataverse_env_missing, fetch_entity_schema
-from .instructions_draft import build_instructions_draft
 from .logger import get_active_log_file_path, log, read_json_log_tail
 from .provider_factory import close_llm_provider
 from .sse import HttpStatus
@@ -70,8 +69,9 @@ def _now_iso() -> str:
 start_time = time.monotonic()
 schema_refreshing = False
 
-schema_cache: dict[str, str] = {}                      # 스키마 텍스트
+schema_cache: dict[str, str] = {}                       # 스키마 텍스트
 schema_meta: dict[str, dict[str, str]] = {}             # 등록 테이블 전체
+schema_lookups: dict[str, dict[str, list[str]]] = {}    # 테이블별 {컬럼: [대상 테이블...]} — 조인 후보 계산용
 pending_describe: dict[str, asyncio.Task] = {}
 # schema.json은 "전체를 읽고 한 항목만 고쳐서 전체를 다시 쓰는" 구조라, 여러 테이블을
 # 동시에 describe(스키마 갱신은 6개씩 병렬)하면 나중에 끝난 쓰기가 먼저 끝난 쓰기를
@@ -103,6 +103,7 @@ def reload_from_schema_file() -> None:
     data = _read_json_file(SCHEMA_FILE, {})
     schema_cache.clear()
     schema_meta.clear()
+    schema_lookups.clear()
     if not isinstance(data, dict):
         log.error("SCHEMA", "schema.json 최상위 값은 JSON 객체여야 합니다.")
         return
@@ -113,12 +114,15 @@ def reload_from_schema_file() -> None:
         label = info.get("label")
         domain = info.get("domain")
         schema = info.get("schema")
+        lookups = info.get("lookups")
         schema_meta[table] = {
             "label": label if isinstance(label, str) and label else table,
             "domain": domain if isinstance(domain, str) and domain else "기타",
         }
         if isinstance(schema, str) and schema:
             schema_cache[table] = schema
+        if isinstance(lookups, dict):
+            schema_lookups[table] = lookups
     log.info("SCHEMA", f"카탈로그 동기화: {len(schema_meta)}개 테이블 (스키마 로드: {len(schema_cache)}개)")
 
 
@@ -394,6 +398,8 @@ async def describe_table(table: str) -> str:
         schema_cache[table] = result.markdown
         if table not in schema_meta:
             schema_meta[table] = {"label": entry.get("label") or table, "domain": entry.get("domain") or "기타"}
+        if result.lookups:
+            schema_lookups[table] = result.lookups
     return result.markdown
 
 
@@ -468,12 +474,64 @@ async def create_project_route(request: Request):
     return projects.create_project(body.get("name", ""), tables)
 
 
+@app.put("/api/projects/reorder")
+async def reorder_projects_route(request: Request):
+    # {project_id}보다 먼저 등록해야 한다 — 안 그러면 "reorder"가 project_id로 해석될 수 있다.
+    body = await request.json()
+    if not isinstance(body, dict) or not _is_string_array(body.get("order")):
+        return JSONResponse({"error": "order는 프로젝트 id 문자열 배열이어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
+    return {"projects": projects.reorder_projects(body["order"])}
+
+
 @app.get("/api/projects/{project_id}")
 async def get_project_route(project_id: str):
     project = projects.get_project(project_id)
     if project is None:
         return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
     return project
+
+
+# schema.json의 lookups(Dataverse가 실제로 갖고 있는 FK, reload_from_schema_file()이
+# schema_lookups로 메모리에 올려둠)를 그대로 훑어 프로젝트 테이블 스코프 "안에서만"
+# 연결되는 조인 후보를 계산한다 — 추측이 아니라 스키마가 이미 아는 사실이라 사람이
+# 매번 다이어그램에서 그려 넣을 필요가 없다(예전 instructions_draft.py의
+# _draft_joins()와 같은 발상, 지침 패널 재설계로 그 모듈이 통째로 삭제되면서
+# 진입점이 없어졌던 것을 후보 목록 형태로 되살림). 저장은 안 하고 매번 새로 계산만
+# 한다 — 프론트가 "추가" 누른 것만 실제 joins에 반영된다.
+_JOIN_CANDIDATE_EXCLUDE_TARGETS = {"systemuser", "team", "businessunit"}
+
+
+@app.get("/api/projects/{project_id}/join-candidates")
+async def project_join_candidates_route(project_id: str):
+    project = projects.get_project(project_id)
+    if project is None:
+        return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
+    tables = project.get("tables") or []
+    if not tables:
+        # 스코프 미지정(전체 허용) 프로젝트는 후보가 카탈로그 전체 규모로 커질 수 있어 건너뛴다.
+        return {"joins": []}
+
+    in_scope = set(tables)
+    seen: set[tuple[str, str, str, str]] = set()
+    candidates: list[dict[str, str]] = []
+    for table in tables:
+        lookups = schema_lookups.get(table)
+        if not isinstance(lookups, dict):
+            continue
+        for column, targets in lookups.items():
+            if not isinstance(targets, list) or not isinstance(column, str):
+                continue
+            for target in targets:
+                if target not in in_scope or target in _JOIN_CANDIDATE_EXCLUDE_TARGETS:
+                    continue
+                key = (table, column, target, f"{target}id")
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(
+                    {"fromTable": table, "fromCol": column, "toTable": target, "toCol": f"{target}id", "label": ""}
+                )
+    return {"joins": candidates}
 
 
 @app.patch("/api/projects/{project_id}")
@@ -535,25 +593,6 @@ async def describe_route(table: str | None = None):
     finally:
         if created:
             pending_describe.pop(table, None)
-
-
-# ─── API: 지침 초안 생성 ────────────────────────────────────────────────────────
-# 2026-08-12: 지침 자체는 더 이상 전역이 아니다 — /api/projects/{id} PATCH의
-# instructions 필드로 프로젝트별 저장(backend/projects.py 참고, data/instructions.json
-# 은 마이그레이션 원본으로만 한 번 쓰이고 이후 무시됨). 초안 생성(로그 마이닝)만
-# 프로젝트에 묶이지 않는 전역 기능이라 그대로 둔다.
-#
-# 실제 질문/답변 로그에서 terms·examples 후보를 뽑고, joins는 schema.json에 캐시된
-# Lookup 대상 엔티티(describe_table이 채움)에서 카탈로그에 등록된 테이블끼리만 후보를
-# 만든다 — 여기서는 Dataverse를 다시 호출하지 않고 이미 있는 파일만 읽는다(저장은
-# 안 함 — 프론트가 InstructionsModal에 미리 채워 보여주고 사람이 검토 후
-# /api/instructions로 저장).
-@app.get("/api/instructions/draft")
-async def get_instructions_draft():
-    schema_data = _read_json_file(SCHEMA_FILE, {})
-    if not isinstance(schema_data, dict):
-        schema_data = {}
-    return build_instructions_draft(schema_data)
 
 
 # ─── API: 로그 조회 ───────────────────────────────────────────────────────────

@@ -51,6 +51,7 @@ export interface ProjectSummary {
   tables: string[]
   createdAt: string
   updatedAt: string
+  order: number
 }
 
 // 노트북 셀
@@ -84,6 +85,7 @@ export interface ProjectDetail {
   cells:         Cell[]
   createdAt:     string
   updatedAt:     string
+  order:         number
 }
 
 export interface QueryLog {

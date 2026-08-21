@@ -142,7 +142,11 @@ def _write_project(p: dict[str, Any]) -> None:
 
 def _to_summary(p: dict[str, Any]) -> dict[str, Any]:
     return deepcopy(
-        {"id": p["id"], "name": p["name"], "tables": p["tables"], "createdAt": p["createdAt"], "updatedAt": p["updatedAt"]}
+        {
+            "id": p["id"], "name": p["name"], "tables": p["tables"],
+            "createdAt": p["createdAt"], "updatedAt": p["updatedAt"],
+            "order": p.get("order", 0),
+        }
     )
 
 
@@ -156,9 +160,37 @@ def list_projects() -> list[dict[str, Any]]:
     except OSError:
         return []
     projects = [p for p in (_read_project(f) for f in files) if p is not None]
+
+    # 2026-08-21 이전 프로젝트엔 order 필드가 없다 — 그 경우 하나라도 있으면 예전
+    # 정렬 기준(최근 사용순)으로 한 번만 order를 매겨 파일에 자가 치유(self-heal)한다.
+    # 그 이후로는 순서를 수동으로 옮기면(reorder_projects) 이 값만 바뀐다.
+    if any("order" not in p for p in projects):
+        projects.sort(key=lambda p: p["updatedAt"], reverse=True)
+        for index, p in enumerate(projects):
+            if p.get("order") != index:
+                p["order"] = index
+                _write_project(p)
+
     summaries = [_to_summary(p) for p in projects]
-    summaries.sort(key=lambda s: s["updatedAt"], reverse=True)  # 최근 사용순
+    summaries.sort(key=lambda s: s["order"])
     return summaries
+
+
+def reorder_projects(ordered_ids: list[str]) -> list[dict[str, Any]]:
+    """사이드바에서 위/아래로 옮긴 새 순서를 그대로 order에 반영한다.
+
+    프론트가 이미 화면에 보이는 전체 프로젝트 id를 새 순서대로 보내주므로, 여기서는
+    각 프로젝트의 order를 그 배열 인덱스로 덮어쓰기만 한다 — 두 개씩 스왑하는 것보다
+    간단하고, 나중에 드래그 앤 드롭으로 바꿔도 이 함수는 그대로 재사용된다.
+    """
+    for index, project_id in enumerate(ordered_ids):
+        p = _read_project(project_id)
+        if p is None:
+            continue
+        if p.get("order") != index:
+            p["order"] = index
+            _write_project(p)
+    return list_projects()
 
 
 def get_project(project_id: str) -> dict[str, Any] | None:
@@ -169,6 +201,10 @@ def get_project(project_id: str) -> dict[str, Any] | None:
 def create_project(name: str, tables: list[str] | None = None) -> dict[str, Any]:
     project_id = str(uuid.uuid4())
     now = _now_iso()
+    try:
+        existing_count = sum(1 for f in PROJECTS_DIR.iterdir() if f.suffix == ".json")
+    except OSError:
+        existing_count = 0
     p = {
         "id": project_id,
         "name": name.strip() or "제목 없는 프로젝트",
@@ -178,6 +214,7 @@ def create_project(name: str, tables: list[str] | None = None) -> dict[str, Any]
         "history": [],
         "createdAt": now,
         "updatedAt": now,
+        "order": existing_count,   # 사이드바 맨 아래에 추가 — 위/아래 버튼으로 옮긴 순서만 이후 유지
     }
     _write_project(p)
     log.info("PROJECT", f'생성: "{p["name"]}" ({project_id})')
@@ -257,6 +294,14 @@ def get_project_tables(project_id: str) -> list[str]:
 def get_project_instructions(project_id: str) -> dict[str, Any]:
     p = _read_project(project_id)
     return _copy_instructions(p.get("instructions") if p else None)
+
+
+def get_project_name(project_id: str) -> str:
+    # 로그에 project_id(UUID)만 남으면 사람이 눈으로 구분할 수 없어서, 채팅 로그에
+    # 같이 찍을 사람이 읽을 수 있는 이름을 조회하는 용도(chat_api.py의 log_context).
+    p = _read_project(project_id)
+    name = p.get("name") if p else None
+    return name if isinstance(name, str) and name else project_id
 
 
 def project_exists(project_id: str) -> bool:

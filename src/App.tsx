@@ -2,10 +2,10 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import Header             from './components/Header'
 import Sidebar            from './components/Sidebar'
 import NotebookView       from './components/NotebookView'
-import InstructionsModal  from './components/InstructionsModal'
+import InstructionsPanel  from './components/InstructionsPanel'
 import { TOAST_DURATION_MS } from './constants'
 import {
-  listProjects, createProject, getProject, updateProject, deleteProject as apiDeleteProject,
+  listProjects, createProject, getProject, updateProject, deleteProject as apiDeleteProject, reorderProjects,
 } from './api'
 import type { Instructions, NotebookHandle, ProjectSummary, ProjectDetail, Cell } from './types'
 import './App.css'
@@ -22,7 +22,8 @@ export default function App() {
   const [projectList,   setProjectList]   = useState<ProjectSummary[]>([])
   const [activeProject, setActiveProject] = useState<ProjectDetail | null>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [showInstructions, setShowInstructions] = useState(false)
+  // 왼쪽 카탈로그 사이드바와 대칭 — 상시 패널이라 "열림/닫힘"만 토글한다(모달 아님).
+  const [instructionsCollapsed, setInstructionsCollapsed] = useState(true)
   const [toast,         setToast]         = useState<string | null>(null)
 
   const toastTimer  = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -55,7 +56,7 @@ export default function App() {
       const list = await listProjects().catch(() => [] as ProjectSummary[])
       if (list.length === 0) {
         const created = await createProject('새 프로젝트', [])
-        setProjectList([{ id: created.id, name: created.name, tables: created.tables, createdAt: created.createdAt, updatedAt: created.updatedAt }])
+        setProjectList([{ id: created.id, name: created.name, tables: created.tables, createdAt: created.createdAt, updatedAt: created.updatedAt, order: created.order }])
         setActiveProject(created)
         localStorage.setItem(LAST_ACTIVE_KEY, created.id)
         return
@@ -75,7 +76,7 @@ export default function App() {
     setActiveProject(created)
     localStorage.setItem(LAST_ACTIVE_KEY, created.id)
     showToast(`"${created.name}" 프로젝트 생성됨`)
-    return { id: created.id, name: created.name, tables: created.tables, createdAt: created.createdAt, updatedAt: created.updatedAt }
+    return { id: created.id, name: created.name, tables: created.tables, createdAt: created.createdAt, updatedAt: created.updatedAt, order: created.order }
   }, [refreshProjectList, showToast])
 
   const handleSwitchProject = useCallback((id: string) => {
@@ -114,15 +115,32 @@ export default function App() {
     updateProject(projectId, { tables })
   }, [])
 
-  // 노트북 셀 자동저장(디바운스는 NotebookView 쪽에서 처리)
+  // 사이드바 ▲▼ 버튼 — 화면에 이미 보이는(검색으로 걸러졌을 수도 있는) 목록 기준으로
+  // 두 항목의 위치를 바꾼 새 전체 순서를 만들어 즉시 화면에 반영하고, 서버에도 그
+  // 순서 그대로 저장한다(reorderProjects). 실패해도 다음 목록 새로고침에서 서버
+  // 값으로 다시 맞춰지므로 롤백은 따로 안 한다.
+  const handleReorderProjects = useCallback((orderedIds: string[]) => {
+    setProjectList(prev => {
+      const byId = new Map(prev.map(p => [p.id, p]))
+      return orderedIds.map(id => byId.get(id)).filter((p): p is ProjectSummary => !!p)
+    })
+    reorderProjects(orderedIds).catch(() => {})
+  }, [])
+
+  // 노트북 셀 자동저장(디바운스는 NotebookView 쪽에서 처리). 서버 저장뿐 아니라
+  // activeProject.cells도 같이 갱신해야 InstructionsPanel의 "노트북에서 가져오기"가
+  // 방금 실행한 셀을 바로 볼 수 있다(안 그러면 최초 로드 시점 cells로 고정돼버림) —
+  // InstructionsPanel은 activeProject.id로만 key를 주므로 이 갱신으로 리마운트되진 않는다.
   const handleCellsChange = useCallback((cells: Cell[]) => {
     if (!activeProject) return
+    setActiveProject(prev => (prev && prev.id === activeProject.id ? { ...prev, cells } : prev))
     updateProject(activeProject.id, { cells })
   }, [activeProject])
 
-  const openProjectsPanel = useCallback(() => {
-    setSidebarCollapsed(false)
-  }, [])
+  // 헤더의 "📁 프로젝트명" 버튼 — 예전엔 항상 열기만 했는데(이미 열려 있으면 눌러도
+  // 그대로), ≡ 버튼과 똑같이 토글로 바꿨다 — 왼쪽 패널도 오른쪽 지침 패널처럼
+  // 눌러서 접었다 폈다 할 수 있어야 한다는 피드백.
+  const toggleSidebar = useCallback(() => setSidebarCollapsed(c => !c), [])
 
   // 2026-08-12: 지침은 프로젝트별로 분리됐다(activeProject.instructions) — 저장도
   // updateProject로 그 프로젝트의 필드만 바꾼다. 저장 성공 시 App 상태도 즉시
@@ -138,9 +156,11 @@ export default function App() {
     <div className="app">
       <Header
         activeProjectName={activeProject?.name ?? ''}
-        onOpenProjects={openProjectsPanel}
-        onToggleSidebar={() => setSidebarCollapsed(c => !c)}
-        onOpenInstructions={() => setShowInstructions(true)}
+        onOpenProjects={toggleSidebar}
+        onToggleSidebar={toggleSidebar}
+        sidebarOpen={!sidebarCollapsed}
+        onToggleInstructions={() => setInstructionsCollapsed(c => !c)}
+        instructionsOpen={!instructionsCollapsed}
         notebookRef={notebookRef}
       />
       <div className="body">
@@ -153,10 +173,11 @@ export default function App() {
           onRenameProject={handleRenameProject}
           onDeleteProject={handleDeleteProject}
           onSelectTables={handleSelectTables}
+          onReorderProjects={handleReorderProjects}
         />
         {activeProject && (
           <NotebookView
-            key={activeProject.id}
+            key={`nb-${activeProject.id}`}
             ref={notebookRef}
             sessionId={activeProject.id}
             initialCells={activeProject.cells}
@@ -164,19 +185,21 @@ export default function App() {
             showToast={showToast}
           />
         )}
+        {activeProject && (
+          <InstructionsPanel
+            key={`ip-${activeProject.id}`}
+            collapsed={instructionsCollapsed}
+            projectId={activeProject.id}
+            projectName={activeProject.name}
+            projectTables={activeProject.tables ?? []}
+            instructions={activeProject.instructions ?? EMPTY_INSTRUCTIONS}
+            cells={activeProject.cells}
+            onSave={handleSaveInstructions}
+          />
+        )}
       </div>
 
       {toast && <div className="toast">{toast}</div>}
-
-      {showInstructions && activeProject && (
-        <InstructionsModal
-          projectName={activeProject.name}
-          projectTables={activeProject.tables ?? []}
-          instructions={activeProject.instructions ?? EMPTY_INSTRUCTIONS}
-          onSave={handleSaveInstructions}
-          onClose={() => setShowInstructions(false)}
-        />
-      )}
     </div>
   )
 }
