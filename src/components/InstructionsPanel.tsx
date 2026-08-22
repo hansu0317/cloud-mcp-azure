@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { API } from '../constants'
-import { NOISE_COLUMN_RE } from '../lib/schemaColumns'
+import { NOISE_COLUMN_RE, joinKey } from '../lib/schemaColumns'
 import RelationshipDiagram from './RelationshipDiagram'
 import type { Cell, Instructions, JoinDef, TermDef, ExampleDef } from '../types'
 
@@ -21,10 +21,6 @@ interface ColumnInfo { name: string; type: string; desc: string; options?: strin
 
 const EMPTY_TERM:    TermDef    = { table: '', column: '', term: '', def: '' }
 const EMPTY_EXAMPLE: ExampleDef = { question: '', answer: '' }
-
-// 조인 하나를 식별하는 키 — 중복 방지(추가 시)와 "이미 추가된 후보 숨기기"(자동 후보
-// 목록) 양쪽에서 같은 기준을 쓴다.
-const joinKey = (j: JoinDef) => `${j.fromTable}.${j.fromCol}>${j.toTable}.${j.toCol}`
 
 // backend/dataverse.py의 fetchEntitySchema()가 만드는 마크다운 표
 // ("| 컬럼명 | 타입 | 한국어 설명 |" 헤더 + 구분선 + 데이터 행)를 그대로 파싱한다.
@@ -67,6 +63,36 @@ function isMirrorColumn(col: ColumnInfo, all: ColumnInfo[]): boolean {
 
 function isNoiseColumn(col: ColumnInfo, all: ColumnInfo[]): boolean {
   return NOISE_COLUMN_RE.test(col.name) || col.type === 'Uniqueidentifier' || isMirrorColumn(col, all)
+}
+
+// 탭마다 있던 "언제 필요한가요?" 설명이 매번 3~5줄씩 항상 펼쳐져 있어 지침 패널을
+// 열 때마다 화면을 잠식했다. 자동으로 하루에 한 번 띄우는 방식(2026-08-21 초반
+// 버전)도 써봤지만 "그냥 눌렀을 때만 뜨면 된다"는 피드백으로 되돌림 — 이제 탭 안엔
+// 물음표 아이콘 하나만 있고, 누를 때만 지침 패널 안(HintPopup)에 설명이 뜬다.
+const HINT_TEXT: Record<Tab, string> = {
+  joins: '테이블 두 개를 엮는 질문에서 AI가 틀린다면 연결을 알려주세요. 아래 자동 후보를 클릭하거나, 다이어그램에서 컬럼을 다른 테이블로 끌어다 놓으면 만들어집니다.',
+  terms: '컬럼 값(true/false 등)이 실제로 무슨 뜻인지 AI가 모를 때 알려주세요. 아래는 Dataverse에 설명이 없는 컬럼만 자동으로 골라 보여줍니다.',
+  examples: 'AI 답변이 매번 다르거나 헤매면 대표 질문·답변 예시를 등록하세요. 답변은 지어내지 말고 노트북에서 실제로 물어봐서 나온 결과 그대로 넣으세요 — 아래 ✓ 버튼으로 실행된 셀을 가져오면 편합니다.',
+}
+
+// 탭 안에 항상 떠 있는 작은 물음표 — 누르면 HintPopup이 뜬다.
+function HintIcon({ tab, onOpen }: { tab: Tab; onOpen: (tab: Tab) => void }) {
+  return <button type="button" className="instr-hint-icon" onClick={() => onOpen(tab)}>❓ 언제 필요한가요?</button>
+}
+
+// 물음표를 눌렀을 때만 뜨는 설명 팝업 — 배경을 클릭하거나 버튼을 누르면 닫힌다.
+// document.body로 포털하는 화면 전체 모달이 아니라 — "왜 화면 한가운데 뜨냐, 지침
+// 패널 안에서 떠야지"라는 피드백을 반영해 — 지침 패널(.instr-panel,
+// position:relative) 안에서만 뜨는 절대배치 오버레이다.
+function HintPopup({ tab, onClose }: { tab: Tab; onClose: () => void }) {
+  return (
+    <div className="hint-popup-overlay" onClick={onClose}>
+      <div className="hint-popup" onClick={e => e.stopPropagation()}>
+        <div className="hint-popup-text">{HINT_TEXT[tab]}</div>
+        <button type="button" className="btn btn-sm primary" onClick={onClose}>닫기</button>
+      </div>
+    </div>
+  )
 }
 
 // 용어 탭 한 줄 — 비활성 상태면 "컬럼명 + 설명 + ➕"만 보이는 버튼이고, 누르면 그
@@ -136,6 +162,9 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
 
   const [termDraft,    setTermDraft]    = useState<TermDef>(EMPTY_TERM)
   const [exampleDraft, setExampleDraft] = useState<ExampleDef>(EMPTY_EXAMPLE)
+
+  // 탭 설명 팝업 — 물음표 아이콘을 눌렀을 때만 연다(자동으로 뜨지 않음).
+  const [hintPopupTab, setHintPopupTab] = useState<Tab | null>(null)
 
   // 조인은 다이어그램에서 클릭으로, 용어는 "정의 필요" 목록에서, 예시는 "노트북에서
   // 가져오기"에서 각자 알아서 후보를 보여주므로(각 탭 참고) 로그를 훑어 한 번에
@@ -272,6 +301,8 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
         </button>
       </div>
 
+      {hintPopupTab && <HintPopup tab={hintPopupTab} onClose={() => setHintPopupTab(null)} />}
+
       <div className="instr-panel-body">
         {tab === 'joins' && (
           <>
@@ -283,11 +314,7 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
                 🗺 다이어그램으로 연결하기
               </button>
             )}
-            <div className="instr-hint">
-              <b>언제 필요한가요?</b> "영업기회랑 거래처를 같이 보여줘"처럼 <b>테이블 두 개를 엮는 질문</b>에서 AI가 자꾸 틀린다면,
-              어떤 테이블의 어떤 컬럼끼리 연결되는지 알려주세요. 위 "🗺 다이어그램으로 연결하기"를 열어서 컬럼을 클릭하고
-              연결할 테이블을 클릭하면 바로 만들어집니다.
-            </div>
+            <HintIcon tab="joins" onOpen={setHintPopupTab} />
             {projectTables.length === 0 && (
               <div className="instr-hint" style={{ paddingTop: 0 }}>
                 이 프로젝트는 테이블이 하나도 선택되지 않았습니다 — 사이드바 "＋테이블"에서 먼저 테이블을 골라야 여기서 연결을 만들 수 있습니다.
@@ -331,10 +358,7 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
 
         {tab === 'terms' && (
           <>
-            <div className="instr-hint">
-              <b>언제 필요한가요?</b> 컬럼에 저장된 <b>숫자 코드나 값이 실제로 무슨 뜻인지</b> AI가 모를 때 알려주세요.
-              아래는 이 프로젝트가 쓰는 테이블의 컬럼 중 <b>Dataverse에 아직 설명이 없는 것</b>만 골라 보여줍니다 — 필요한 것만 채우면 됩니다.
-            </div>
+            <HintIcon tab="terms" onOpen={setHintPopupTab} />
             {terms.length === 0 && <div className="sb-empty">등록된 용어가 없습니다</div>}
             {terms.map((t, i) => {
               const incomplete = !t.table.trim() || !t.column.trim() || !t.def.trim()
@@ -406,13 +430,7 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
 
         {tab === 'examples' && (
           <>
-            <div className="instr-hint">
-              <b>언제 필요한가요?</b> 같은 유형의 질문에 AI가 매번 다르게 답하거나 자꾸 헤맬 때, "이런 질문엔 이렇게 답해줘"라는
-              대표 예시를 하나 등록해두세요. <b>질문 → 답변, 두 가지만 채우면</b> 추가됩니다 — 답변은 "이렇게 답해줬으면
-              좋겠다"는 희망사항이 아니라, <b>노트북에서 실제로 물어봐서 나온 결과 그대로</b>여야 합니다. 아무 텍스트나
-              타이핑하는 대신, <b>이 프로젝트 노트북에서 실제로 실행해서 눈으로 확인한 셀</b>을 아래에서 골라 오면 두 가지가
-              한 번에 채워집니다.
-            </div>
+            <HintIcon tab="examples" onOpen={setHintPopupTab} />
             {verifiedCells.length > 0 ? (
               <div className="instr-cellpick-row">
                 {verifiedCells.slice(-6).reverse().map(c => (
@@ -494,6 +512,7 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
           projectName={projectName}
           projectTables={projectTables}
           joins={joins}
+          joinCandidates={joinCandidates}
           columnsByTable={columnsCache}
           tableLabel={tableLabel}
           onAddJoin={addJoinIfNew}

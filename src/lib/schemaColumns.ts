@@ -7,3 +7,8 @@
 // 관계(new_l_* 등)보다 시스템 컬럼이 더 많아 보이는 원인이 된다.
 export const NOISE_COLUMN_RE =
   /^(createdby|createdon|createdonbehalfby|modifiedby|modifiedon|modifiedonbehalfby|ownerid|owningbusinessunit|owningteam|owninguser|transactioncurrencyid|versionnumber|importsequencenumber|timezoneruleversionnumber|utcconversiontimezonecode|overriddencreatedon)/i
+
+// 조인 하나를 식별하는 키 — 중복 방지(추가 시)와 "이미 있는 걸 후보 목록에서
+// 숨기기"(자동 후보) 양쪽에서 InstructionsPanel과 RelationshipDiagram이 같이 쓴다.
+export const joinKey = (j: { fromTable: string; fromCol: string; toTable: string; toCol: string }) =>
+  `${j.fromTable}.${j.fromCol}>${j.toTable}.${j.toCol}`
