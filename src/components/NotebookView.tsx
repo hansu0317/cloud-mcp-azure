@@ -113,12 +113,6 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
     }
   }, [sessionId])
 
-  const runAll = useCallback(async () => {
-    for (const cell of cellsRef.current) {
-      await runCell(cell.id)
-    }
-  }, [runCell])
-
   const handleExport = useCallback((id: number) => {
     const cell = cellsRef.current.find(c => c.id === id)
     if (!cell?.output?.rawContent) { showToast('내보낼 데이터가 없습니다.'); return }
@@ -141,7 +135,7 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
     }
   }, [showToast])
 
-  useImperativeHandle(ref, () => ({ addCell, runAll }), [addCell, runAll])
+  useImperativeHandle(ref, () => ({ addCell }), [addCell])
 
   return (
     <div className="notebook-view">

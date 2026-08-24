@@ -106,5 +106,4 @@ export interface StreamChatOptions extends ChatRequest {
 // NotebookView forwardRef 핸들
 export interface NotebookHandle {
   addCell: (text?: string) => number
-  runAll:  () => Promise<void>
 }

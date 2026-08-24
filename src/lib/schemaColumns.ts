@@ -8,6 +8,10 @@
 export const NOISE_COLUMN_RE =
   /^(createdby|createdon|createdonbehalfby|modifiedby|modifiedon|modifiedonbehalfby|ownerid|owningbusinessunit|owningteam|owninguser|transactioncurrencyid|versionnumber|importsequencenumber|timezoneruleversionnumber|utcconversiontimezonecode|overriddencreatedon)/i
 
+// Lookup/Owner/Customer 컬럼은 모두 "이 컬럼이 다른 엔티티를 가리킨다"는 같은 의미다 —
+// 조인 시작점(수동 추가 드롭다운, 연결 다이어그램)을 고를 때 공용으로 쓴다.
+export const LOOKUP_TYPES = new Set(['Lookup', 'Owner', 'Customer'])
+
 // 조인 하나를 식별하는 키 — 중복 방지(추가 시)와 "이미 있는 걸 후보 목록에서
 // 숨기기"(자동 후보) 양쪽에서 InstructionsPanel과 RelationshipDiagram이 같이 쓴다.
 export const joinKey = (j: { fromTable: string; fromCol: string; toTable: string; toCol: string }) =>

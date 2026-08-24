@@ -31,7 +31,6 @@ export default function Header({
       </button>
       <div className="h-div" />
       <div className="nb-only">
-        <button className="btn primary" onClick={() => notebookRef.current?.runAll()}>▶ Run All</button>
         <button className="btn" onClick={() => notebookRef.current?.addCell()}>＋ 셀 추가</button>
       </div>
       <div className="h-spacer" />

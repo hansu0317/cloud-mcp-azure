@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { API } from '../constants'
-import { NOISE_COLUMN_RE, joinKey } from '../lib/schemaColumns'
+import { NOISE_COLUMN_RE, LOOKUP_TYPES, joinKey } from '../lib/schemaColumns'
 import RelationshipDiagram from './RelationshipDiagram'
 import type { Cell, Instructions, JoinDef, TermDef, ExampleDef } from '../types'
 
@@ -21,6 +21,14 @@ interface ColumnInfo { name: string; type: string; desc: string; options?: strin
 
 const EMPTY_TERM:    TermDef    = { table: '', column: '', term: '', def: '' }
 const EMPTY_EXAMPLE: ExampleDef = { question: '', answer: '' }
+const EMPTY_MANUAL_JOIN = { fromTable: '', fromCol: '', toTable: '' }
+
+// 수동 추가 드롭다운 2번째 칸(시작 컬럼)에 보여줄 후보 — 다른 테이블을 가리킬 수
+// 있는 컬럼(Lookup/Owner/Customer)만, 시스템 감사·소유권 컬럼은 제외(RelationshipDiagram의
+// lookupColumnsOf와 같은 기준 — src/lib/schemaColumns.ts에서 공용으로 씀).
+function lookupColumnsOf(columnsCache: Record<string, ColumnInfo[]>, table: string): ColumnInfo[] {
+  return (columnsCache[table] ?? []).filter(c => LOOKUP_TYPES.has(c.type) && !NOISE_COLUMN_RE.test(c.name))
+}
 
 // backend/dataverse.py의 fetchEntitySchema()가 만드는 마크다운 표
 // ("| 컬럼명 | 타입 | 한국어 설명 |" 헤더 + 구분선 + 데이터 행)를 그대로 파싱한다.
@@ -70,7 +78,7 @@ function isNoiseColumn(col: ColumnInfo, all: ColumnInfo[]): boolean {
 // 버전)도 써봤지만 "그냥 눌렀을 때만 뜨면 된다"는 피드백으로 되돌림 — 이제 탭 안엔
 // 물음표 아이콘 하나만 있고, 누를 때만 지침 패널 안(HintPopup)에 설명이 뜬다.
 const HINT_TEXT: Record<Tab, string> = {
-  joins: '테이블 두 개를 엮는 질문에서 AI가 틀린다면 연결을 알려주세요. 아래 자동 후보를 클릭하거나, 다이어그램에서 컬럼을 다른 테이블로 끌어다 놓으면 만들어집니다.',
+  joins: '테이블 두 개를 엮는 질문에서 AI가 틀린다면 연결을 알려주세요. ＋가 붙은 건 Dataverse가 이미 아는 연결이라 클릭 한 번이면 되고, 그 외엔 아래 드롭다운으로 직접 만들 수 있습니다.',
   terms: '컬럼 값(true/false 등)이 실제로 무슨 뜻인지 AI가 모를 때 알려주세요. 아래는 Dataverse에 설명이 없는 컬럼만 자동으로 골라 보여줍니다.',
   examples: 'AI 답변이 매번 다르거나 헤매면 대표 질문·답변 예시를 등록하세요. 답변은 지어내지 말고 노트북에서 실제로 물어봐서 나온 결과 그대로 넣으세요 — 아래 ✓ 버튼으로 실행된 셀을 가져오면 편합니다.',
 }
@@ -198,11 +206,10 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
       .finally(() => setColumnsLoading(prev => ({ ...prev, [table]: false })))
   }
 
-  // 용어 탭을 처음 열 때 이 프로젝트의 테이블 전부를 한 번에 불러온다(테이블별로
-  // 나열해서 보여주는 방식이라 어차피 다 필요함 — 조인 탭처럼 고를 때마다 하나씩
-  // 불러오는 게 아니다). 이미 불러온 테이블은 ensureColumns가 다시 건드리지 않는다.
+  // 용어 탭과 조인 탭(수동 추가 드롭다운에 컬럼 목록이 필요)을 열 때 이 프로젝트의
+  // 테이블 전부를 한 번에 불러온다. 이미 불러온 테이블은 ensureColumns가 다시 안 건드린다.
   useEffect(() => {
-    if (tab !== 'terms') return
+    if (tab !== 'terms' && tab !== 'joins') return
     for (const table of projectTables) ensureColumns(table)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, projectTables])
@@ -221,9 +228,23 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, projectTables.join(',')])
 
-  // 다이어그램에서 컬럼을 클릭해 만든 연결 — 위저드 없이 여기서 바로 만들어지므로 중복만 막는다.
+  // 후보 카드 클릭이나 다이어그램에서 만든 연결 — 위저드 없이 여기서 바로 만들어지므로 중복만 막는다.
   const addJoinIfNew = (join: JoinDef) => {
     setJoins(prev => (prev.some(j => joinKey(j) === joinKey(join)) ? prev : [...prev, join]))
+  }
+
+  // 자동 후보로 안 잡히는 특이 케이스용 수동 추가 — 다이어그램 없이 드롭다운
+  // 3개(시작 테이블 → 시작 컬럼 → 대상 테이블)로 같은 결과를 만든다. 대상 컬럼은
+  // 항상 그 테이블 기본키(관례상 `${table}id`)로 자동 지정 — 다이어그램·자동
+  // 후보와 동일한 규칙이라 사람이 고를 게 없다.
+  const [manualJoin, setManualJoin] = useState(EMPTY_MANUAL_JOIN)
+  const addManualJoin = () => {
+    if (!manualJoin.fromTable || !manualJoin.fromCol || !manualJoin.toTable) return
+    addJoinIfNew({
+      fromTable: manualJoin.fromTable, fromCol: manualJoin.fromCol,
+      toTable: manualJoin.toTable, toCol: `${manualJoin.toTable}id`, label: '',
+    })
+    setManualJoin(EMPTY_MANUAL_JOIN)
   }
   const activateTerm = (table: string, column: string) => setTermDraft({ table, column, term: '', def: '' })
   const addTerm = () => {
@@ -306,46 +327,19 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
       <div className="instr-panel-body">
         {tab === 'joins' && (
           <>
-            {projectTables.length > 0 && (
-              <button
-                type="button" className="btn btn-sm primary instr-diagram-btn"
-                onClick={() => { for (const t of projectTables) ensureColumns(t); setDiagramOpen(true) }}
-              >
-                🗺 다이어그램으로 연결하기
-              </button>
-            )}
             <HintIcon tab="joins" onOpen={setHintPopupTab} />
             {projectTables.length === 0 && (
               <div className="instr-hint" style={{ paddingTop: 0 }}>
                 이 프로젝트는 테이블이 하나도 선택되지 않았습니다 — 사이드바 "＋테이블"에서 먼저 테이블을 골라야 여기서 연결을 만들 수 있습니다.
               </div>
             )}
-            {(() => {
-              const visibleCandidates = joinCandidates.filter(c => !joins.some(j => joinKey(j) === joinKey(c)))
-              if (visibleCandidates.length === 0) return null
-              return (
-                <div className="instr-term-group">
-                  <div className="instr-term-group-hdr">
-                    🔎 스키마에서 자동으로 찾은 연결 후보
-                    <span className="instr-term-need-badge">{visibleCandidates.length}개</span>
-                  </div>
-                  {visibleCandidates.map((c, i) => (
-                    <button
-                      type="button" key={i} className="instr-term-row-btn"
-                      title="Dataverse에 실제로 있는 관계(FK)에서 찾았습니다 — 클릭하면 바로 추가됩니다"
-                      onClick={() => addJoinIfNew(c)}
-                    >
-                      <span className="instr-term-row-col">{tableLabel(c.fromTable)}.{c.fromCol}</span>
-                      <span className="instr-term-row-desc">→ {tableLabel(c.toTable)}</span>
-                      <span className="instr-term-row-plus">＋</span>
-                    </button>
-                  ))}
-                </div>
-              )
-            })()}
-            {joins.length === 0 && <div className="sb-empty">등록된 테이블 연결이 없습니다</div>}
+            {/* 저장된 연결(×로 삭제)과 아직 저장 안 한 자동 후보(＋로 추가)를 다이어그램
+                없이 한 목록으로 보여준다 — 스타일(×/＋)만으로 둘을 구분한다. */}
+            {joins.length === 0 && joinCandidates.length === 0 && (
+              <div className="sb-empty">등록된 테이블 연결이 없습니다</div>
+            )}
             {joins.map((j, i) => (
-              <div className="instr-row" key={i}>
+              <div className="instr-row" key={`s-${i}`}>
                 <span className="instr-row-text">
                   <b>{tableLabel(j.fromTable)}</b>.{j.fromCol} → <b>{tableLabel(j.toTable)}</b>.{j.toCol}
                   {j.label && <span className="instr-row-label"> ({j.label})</span>}
@@ -353,6 +347,66 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
                 <button className="instr-row-del" title="삭제" onClick={() => setJoins(prev => prev.filter((_, idx) => idx !== i))}>×</button>
               </div>
             ))}
+            {joinCandidates.filter(c => !joins.some(j => joinKey(j) === joinKey(c))).map((c, i) => (
+              <button
+                type="button" key={`c-${i}`} className="instr-term-row-btn"
+                title="Dataverse에 실제로 있는 관계(FK)에서 찾았습니다 — 클릭하면 추가됩니다"
+                onClick={() => addJoinIfNew(c)}
+              >
+                <span className="instr-term-row-col">{tableLabel(c.fromTable)}.{c.fromCol}</span>
+                <span className="instr-term-row-desc">→ {tableLabel(c.toTable)}</span>
+                <span className="instr-term-row-plus">＋</span>
+              </button>
+            ))}
+
+            {projectTables.length > 0 && (
+              <div className="instr-add-col">
+                <select
+                  className="proj-new-input instr-select"
+                  value={manualJoin.fromTable}
+                  onChange={e => setManualJoin({ fromTable: e.target.value, fromCol: '', toTable: '' })}
+                >
+                  <option value="">시작 테이블</option>
+                  {projectTables.map(t => <option key={t} value={t}>{tableLabel(t)}</option>)}
+                </select>
+                <select
+                  className="proj-new-input instr-select"
+                  value={manualJoin.fromCol}
+                  disabled={!manualJoin.fromTable}
+                  onChange={e => setManualJoin(m => ({ ...m, fromCol: e.target.value }))}
+                >
+                  <option value="">시작 컬럼</option>
+                  {lookupColumnsOf(columnsCache, manualJoin.fromTable).map(c => (
+                    <option key={c.name} value={c.name}>{(c.desc.split(' — ')[0] || c.name)} ({c.name})</option>
+                  ))}
+                </select>
+                <select
+                  className="proj-new-input instr-select"
+                  value={manualJoin.toTable}
+                  disabled={!manualJoin.fromCol}
+                  onChange={e => setManualJoin(m => ({ ...m, toTable: e.target.value }))}
+                >
+                  <option value="">대상 테이블</option>
+                  {projectTables.map(t => <option key={t} value={t}>{tableLabel(t)}</option>)}
+                </select>
+                <button
+                  type="button" className="btn btn-sm primary instr-add-col-btn"
+                  disabled={!manualJoin.fromTable || !manualJoin.fromCol || !manualJoin.toTable}
+                  onClick={addManualJoin}
+                >
+                  이 연결 추가
+                </button>
+              </div>
+            )}
+
+            {projectTables.length > 0 && (
+              <button
+                type="button" className="btn btn-sm instr-diagram-link"
+                onClick={() => { for (const t of projectTables) ensureColumns(t); setDiagramOpen(true) }}
+              >
+                🗺 다이어그램으로 보기(고급)
+              </button>
+            )}
           </>
         )}
 
@@ -517,6 +571,8 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
           tableLabel={tableLabel}
           onAddJoin={addJoinIfNew}
           onClose={() => setDiagramOpen(false)}
+          onSave={handleSave}
+          saving={saving}
         />
       )}
     </div>

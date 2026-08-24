@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { NOISE_COLUMN_RE, joinKey as joinKeyOf } from '../lib/schemaColumns'
+import { NOISE_COLUMN_RE, LOOKUP_TYPES, joinKey as joinKeyOf } from '../lib/schemaColumns'
 import type { JoinDef } from '../types'
 
 interface ColumnInfo { name: string; type: string; desc: string; options?: string[] }
@@ -14,13 +14,14 @@ interface Props {
   tableLabel:      (name: string) => string
   onAddJoin:       (join: JoinDef) => void
   onClose:         () => void
+  onSave:          () => void
+  saving:          boolean
 }
 
 interface Rect { x: number; y: number; w: number; h: number }
 interface DragColumn { table: string; column: string }
 
 const rowKey = (table: string, column: string) => `${table}::${column}`
-const LOOKUP_TYPES = new Set(['Lookup', 'Owner', 'Customer'])
 // HTML5 드래그의 dataTransfer는 문자열/커스텀 MIME만 나르므로, "테이블을 캔버스로
 // 끌어옴"(배치)과 "컬럼을 다른 테이블로 끌어옴"(연결)을 서로 다른 타입으로 구분한다.
 const DND_TABLE  = 'application/x-rdiag-table'
@@ -39,7 +40,7 @@ const DND_COLUMN = 'application/x-rdiag-column'
 // 자기참조(fromTable === toTable)는 상자 안에 "↻" 뱃지로 단순화했다 — 컬럼을 자기
 // 자신의 상자 위에 끌어다 놓아도 자기참조 조인이 만들어지고, 뱃지로 바로 나타난다.
 export default function RelationshipDiagram({
-  projectName, projectTables, joins, joinCandidates, columnsByTable, tableLabel, onAddJoin, onClose,
+  projectName, projectTables, joins, joinCandidates, columnsByTable, tableLabel, onAddJoin, onClose, onSave, saving,
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null)
   const nodesRef  = useRef<HTMLDivElement>(null)
@@ -230,6 +231,10 @@ export default function RelationshipDiagram({
             </div>
           </div>
           <div className="instr-hdr-actions">
+            {/* 다이어그램이 패널을 전체화면으로 덮어버려서, 연결을 만들고 나서 실제
+                저장 버튼(패널 하단)이 화면에 아예 안 보이는 위치에 가려져 있었다 —
+                여기 직접 저장 버튼을 둬서 다이어그램을 안 닫고도 바로 저장할 수 있게 한다. */}
+            <button className="btn btn-xs primary" onClick={onSave} disabled={saving}>{saving ? '저장 중…' : '💾 저장'}</button>
             <button className="btn btn-xs" onClick={onClose}>✕ 닫기</button>
           </div>
         </div>

@@ -185,7 +185,10 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 .instr-cellpick-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 10px 4px; }
 .instr-cellpick { font-size: 11px; padding: 4px 10px; border-radius: 999px; background: #0d1a12; border: 1px solid #16351f; color: #86efac; cursor: pointer; font-family: inherit; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .instr-cellpick:hover { border-color: #22c55e; color: #bbf7d0; }
-.instr-diagram-btn { margin: 8px 10px 0; }
+/* 대부분은 위 목록·드롭다운으로 끝나므로, 다이어그램은 특이 케이스용 보조
+   링크로 눈에 덜 띄게 둔다(기본 화면에서 강조하지 않음). */
+.instr-diagram-link { margin: 10px 10px 0; color: #64748b; border-style: dashed; }
+.instr-diagram-link:hover { color: #94a3b8; }
 
 /* 테이블 연결 다이어그램(RelationshipDiagram) — Power BI 모델 뷰처럼 테이블을 박스로,
    조인을 선으로 보여주는 전체화면 오버레이. 여기서 직접 클릭으로 연결도 만든다
