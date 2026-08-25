@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { API } from '../constants'
-import { NOISE_COLUMN_RE, LOOKUP_TYPES, joinKey } from '../lib/schemaColumns'
+import { NOISE_COLUMN_RE, joinKey } from '../lib/schemaColumns'
 import RelationshipDiagram from './RelationshipDiagram'
 import type { Cell, Instructions, JoinDef, TermDef, ExampleDef } from '../types'
 
@@ -12,6 +12,7 @@ interface Props {
   instructions:  Instructions
   cells:         Cell[]
   onSave:        (next: Instructions) => Promise<void>
+  showToast:     (msg: string) => void
 }
 
 type Tab = 'joins' | 'terms' | 'examples'
@@ -21,14 +22,16 @@ interface ColumnInfo { name: string; type: string; desc: string; options?: strin
 
 const EMPTY_TERM:    TermDef    = { table: '', column: '', term: '', def: '' }
 const EMPTY_EXAMPLE: ExampleDef = { question: '', answer: '' }
-const EMPTY_MANUAL_JOIN = { fromTable: '', fromCol: '', toTable: '' }
 
-// 수동 추가 드롭다운 2번째 칸(시작 컬럼)에 보여줄 후보 — 다른 테이블을 가리킬 수
-// 있는 컬럼(Lookup/Owner/Customer)만, 시스템 감사·소유권 컬럼은 제외(RelationshipDiagram의
-// lookupColumnsOf와 같은 기준 — src/lib/schemaColumns.ts에서 공용으로 씀).
-function lookupColumnsOf(columnsCache: Record<string, ColumnInfo[]>, table: string): ColumnInfo[] {
-  return (columnsCache[table] ?? []).filter(c => LOOKUP_TYPES.has(c.type) && !NOISE_COLUMN_RE.test(c.name))
-}
+// "작은 화면에 너무 복잡해 보인다"는 피드백(2026-08-24) — 패널 고정폭(360px)이 테이블
+// 연결·용어·예시를 다 담기엔 좁아서 줄바꿈·겹침이 잦았다. 폭을 늘리는 것만으론 화면
+// 크기가 제각각인 사람들을 다 만족 못 시키므로, 기본폭을 좀 넉넉히 늘리고 + 드래그로
+// 직접 조절할 수 있게 한다(리사이즈 핸들, VS Code 사이드바와 같은 패턴). localStorage에
+// 저장해서 다음에 열 때도 유지된다.
+const PANEL_WIDTH_KEY     = 'crm-ai-chat:instrPanelWidth'
+const PANEL_WIDTH_DEFAULT = 420
+const PANEL_WIDTH_MIN     = 340
+const PANEL_WIDTH_MAX     = 720
 
 // backend/dataverse.py의 fetchEntitySchema()가 만드는 마크다운 표
 // ("| 컬럼명 | 타입 | 한국어 설명 |" 헤더 + 구분선 + 데이터 행)를 그대로 파싱한다.
@@ -78,7 +81,7 @@ function isNoiseColumn(col: ColumnInfo, all: ColumnInfo[]): boolean {
 // 버전)도 써봤지만 "그냥 눌렀을 때만 뜨면 된다"는 피드백으로 되돌림 — 이제 탭 안엔
 // 물음표 아이콘 하나만 있고, 누를 때만 지침 패널 안(HintPopup)에 설명이 뜬다.
 const HINT_TEXT: Record<Tab, string> = {
-  joins: '테이블 두 개를 엮는 질문에서 AI가 틀린다면 연결을 알려주세요. ＋가 붙은 건 Dataverse가 이미 아는 연결이라 클릭 한 번이면 되고, 그 외엔 아래 드롭다운으로 직접 만들 수 있습니다.',
+  joins: '테이블 두 개를 엮는 질문에서 AI가 틀린다면 연결을 알려주세요. "관계를 찾았습니다"에 뜬 건 Dataverse가 이미 아는 연결이라 눌러서 추가하면 되고(SQL을 몰라도 됩니다), 거기에 없는 특이한 경우만 "다이어그램에서 새 연결 만들기"를 눌러 그림으로 만드세요.',
   terms: '컬럼 값(true/false 등)이 실제로 무슨 뜻인지 AI가 모를 때 알려주세요. 아래는 Dataverse에 설명이 없는 컬럼만 자동으로 골라 보여줍니다.',
   examples: 'AI 답변이 매번 다르거나 헤매면 대표 질문·답변 예시를 등록하세요. 답변은 지어내지 말고 노트북에서 실제로 물어봐서 나온 결과 그대로 넣으세요 — 아래 ✓ 버튼으로 실행된 셀을 가져오면 편합니다.',
 }
@@ -153,6 +156,37 @@ function TermQuickRow({ col, active, draft, onActivate, onChange, onAdd }: {
   )
 }
 
+// 연결 한 줄 — 예전엔 줄마다 "설명 없으면 ＋설명 추가" 프롬프트를 항상 띄워서
+// 목록(특히 여러 개일 때)이 너무 길어 보인다는 피드백(2026-08-24)을 받았다. 설명
+// 입력은 다이어그램의 "관계 상세" 패널로 옮기고, 여기 목록은 값이 있을 때만 짧게
+// 보여주는 걸로 줄였다 — 없으면 그냥 표시할 게 없는 것뿐, 채우라고 조르지 않는다.
+function JoinRow({ join, fromLabel, toLabel, fromColLabel, onDelete }: {
+  join: JoinDef; fromLabel: string; toLabel: string; fromColLabel: string
+  onDelete: () => void
+}) {
+  // 같은 테이블을 가리키는 자기참조 연결(예: 거래처의 "상위 거래처")은 위 굵은
+  // 줄이 "거래처 → 거래처"로 뭉개져서 무슨 관계인지 사라진다 — 그 경우만 연결고리
+  // 컬럼의 한국어 뜻을 굵은 줄에 같이 보여준다(RelationshipDiagram의 columnLabel과
+  // 같은 소스).
+  const selfRef = fromLabel === toLabel && fromColLabel !== join.fromCol
+
+  return (
+    <div className="instr-join-row">
+      <div className="instr-join-row-main">
+        <span className="instr-join-row-tables">
+          <b>{fromLabel}</b> → <b>{toLabel}</b>
+          {selfRef && <span className="instr-join-row-selfnote"> · {fromColLabel} 기준</span>}
+        </span>
+        <button className="instr-row-del" title="삭제" onClick={onDelete}>×</button>
+      </div>
+      <div className="instr-join-row-cols">
+        .{join.fromCol} → .{join.toCol}
+        {join.label && <span className="instr-join-row-label"> · {join.label}</span>}
+      </div>
+    </div>
+  )
+}
+
 // "지침" 패널 — 왼쪽 카탈로그 사이드바와 대칭되는 오른쪽 상시 패널. 테이블 조인
 // 관계·컬럼 용어·질문 예시를 등록하면 서버가 매 질문의 시스템 프롬프트에 최신
 // 저장값을 넣어 모델이 참고한다.
@@ -161,7 +195,7 @@ function TermQuickRow({ col, active, draft, onActivate, onChange, onAdd }: {
 // 스스로 하는 게 아니라, App.tsx가 <InstructionsPanel key={activeProject.id} .../>로
 // 프로젝트 전환 시 강제로 새로 마운트시켜서다(NotebookView와 동일한 패턴) — 그래야
 // 아래 useState(instructions.*) 초기값이 새 프로젝트 것으로 다시 계산된다.
-export default function InstructionsPanel({ collapsed, projectId, projectName, projectTables, instructions, cells, onSave }: Props) {
+export default function InstructionsPanel({ collapsed, projectId, projectName, projectTables, instructions, cells, onSave, showToast }: Props) {
   const [tab, setTab] = useState<Tab>('joins')
   const [joins,    setJoins]    = useState<JoinDef[]>(instructions.joins)
   const [terms,    setTerms]    = useState<TermDef[]>(instructions.terms)
@@ -173,6 +207,54 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
 
   // 탭 설명 팝업 — 물음표 아이콘을 눌렀을 때만 연다(자동으로 뜨지 않음).
   const [hintPopupTab, setHintPopupTab] = useState<Tab | null>(null)
+
+  const [panelWidth, setPanelWidth] = useState(() => {
+    try {
+      const saved = Number(localStorage.getItem(PANEL_WIDTH_KEY))
+      if (saved >= PANEL_WIDTH_MIN && saved <= PANEL_WIDTH_MAX) return saved
+    } catch { /* localStorage 접근 불가(프라이빗 모드 등) — 기본값 사용 */ }
+    return PANEL_WIDTH_DEFAULT
+  })
+  const resizingRef = useRef(false)
+  // 접혔다 펼쳐질 때의 슬라이드 애니메이션(.instr-panel의 transition: width)이 드래그
+  // 중에도 그대로 걸리면 마우스를 따라오지 못하고 한 박자 늦게(고무줄처럼) 움직인다 —
+  // 드래그하는 동안만 transition을 꺼야 한다.
+  const [isResizing, setIsResizing] = useState(false)
+  // 패널이 화면 오른쪽에 붙어 있어서, 왼쪽 가장자리(핸들)를 왼쪽으로 끌수록(마우스 X가
+  // 줄어들수록) 폭이 늘어난다 — startX와의 차이를 그대로 더한다.
+  const handleResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault()
+    resizingRef.current = true
+    setIsResizing(true)
+    const startX = e.clientX
+    const startWidth = panelWidth
+    document.body.style.userSelect = 'none'
+    const onMove = (ev: MouseEvent) => {
+      if (!resizingRef.current) return
+      setPanelWidth(Math.min(PANEL_WIDTH_MAX, Math.max(PANEL_WIDTH_MIN, startWidth + (startX - ev.clientX))))
+    }
+    const onUp = () => {
+      resizingRef.current = false
+      setIsResizing(false)
+      document.body.style.userSelect = ''
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      setPanelWidth(w => {
+        try { localStorage.setItem(PANEL_WIDTH_KEY, String(w)) } catch { /* 저장 실패해도 이번 세션 폭은 유지됨 */ }
+        return w
+      })
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  // "등록된 목록"과 "새로 추가하는 UI"가 한 화면에 뒤섞여 보여서 헷갈린다는 피드백
+  // (2026-08-24) — 용어·예시 탭은 추가 UI를 접을 수 있는 섹션으로 분리한다. 처음 쓰는
+  // 사람(아직 하나도 등록 안 함)에게는 기본으로 펼쳐서 바로 추가하게 안내하고,
+  // 이미 등록된 게 있으면 접어서 등록된 목록만 깔끔하게 보여준다. 조인 탭은 접고 펼
+  // 내용이 없어졌다(아래 참고 — 다이어그램 버튼 하나뿐이라 joinAddOpen이 필요 없음).
+  const [termAddOpen,    setTermAddOpen]    = useState(() => terms.length === 0)
+  const [exampleAddOpen, setExampleAddOpen] = useState(() => examples.length === 0)
 
   // 조인은 다이어그램에서 클릭으로, 용어는 "정의 필요" 목록에서, 예시는 "노트북에서
   // 가져오기"에서 각자 알아서 후보를 보여주므로(각 탭 참고) 로그를 훑어 한 번에
@@ -233,19 +315,20 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
     setJoins(prev => (prev.some(j => joinKey(j) === joinKey(join)) ? prev : [...prev, join]))
   }
 
-  // 자동 후보로 안 잡히는 특이 케이스용 수동 추가 — 다이어그램 없이 드롭다운
-  // 3개(시작 테이블 → 시작 컬럼 → 대상 테이블)로 같은 결과를 만든다. 대상 컬럼은
-  // 항상 그 테이블 기본키(관례상 `${table}id`)로 자동 지정 — 다이어그램·자동
-  // 후보와 동일한 규칙이라 사람이 고를 게 없다.
-  const [manualJoin, setManualJoin] = useState(EMPTY_MANUAL_JOIN)
-  const addManualJoin = () => {
-    if (!manualJoin.fromTable || !manualJoin.fromCol || !manualJoin.toTable) return
-    addJoinIfNew({
-      fromTable: manualJoin.fromTable, fromCol: manualJoin.fromCol,
-      toTable: manualJoin.toTable, toCol: `${manualJoin.toTable}id`, label: '',
-    })
-    setManualJoin(EMPTY_MANUAL_JOIN)
-  }
+  // 이미 등록된 건 후보 목록에서 뺀다 — "관계를 찾았습니다" 섹션엔 아직 안 넣은 것만
+  // 남는다. SQL을 모르는 사람은 테이블.컬럼을 직접 고르는 것보다 "이런 관계를
+  // 찾았어요, 눌러서 추가하세요" 쪽이 훨씬 쉬우므로(2026-08-24 피드백) 이 섹션을
+  // 아래 "다이어그램에서 새 연결 만들기" 버튼보다 먼저, 항상 펼쳐진 채로 보여준다.
+  const joinCandidatesToShow = useMemo(
+    () => joinCandidates.filter(c => !joins.some(j => joinKey(j) === joinKey(c))),
+    [joinCandidates, joins],
+  )
+
+  // 자동 후보에 없는 특이 케이스는 다이어그램에서 직접 만든다. 원래 자유 배치형
+  // 캔버스(테이블 여러 개를 한 화면에 올려놓는 방식)였는데, 3~5개만 놓아도 선이
+  // 서로 꼬여서 "그래프가 이상하다"는 피드백(2026-08-24)으로 "테이블 A ↔ B" 한
+  // 쌍만 골라서 보는 방식으로 바꿨다 — 그래서 여기서 특정 테이블의 캔버스 배치를
+  // 뗄 일 자체가 없어져 removeTable류 로직도 필요 없어졌다(RelationshipDiagram 참고).
   const activateTerm = (table: string, column: string) => setTermDraft({ table, column, term: '', def: '' })
   const addTerm = () => {
     if (!termDraft.table.trim() || !termDraft.column.trim() || !termDraft.term.trim() || !termDraft.def.trim()) return
@@ -263,6 +346,13 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
   // 화면에만 있을 수 있다(사람이 아직 안 채운 상태). 이 상태로 그냥 저장하면 빈 정의·
   // 빈 답변이 그대로 시스템 프롬프트에 들어가 버려서(_instruction_prompt 참고), "초안
   // 생성 → 검토 없이 바로 저장"을 해도 최소한 사고는 안 나게 여기서 걸러낸다.
+  //
+  // onSave(App.tsx의 handleSaveInstructions)는 서버 PATCH가 실패하면 이제 예외를
+  // 던진다(2026-08-24 이전엔 api.ts의 updateProject가 응답 상태를 아예 안 봐서, 서버가
+  // 저장을 거부해도 화면은 "지침이 저장됐습니다" 토스트까지 그대로 떴다 — "저장을
+  // 눌러도 반영이 안 된다"는 피드백의 실제 원인). 여기서 잡아서 성공한 척하지 않고
+  // 에러를 보여준다 — 실패 시 draftMsg도 건드리지 않아 "저장 안 된 것들" 안내가
+  // 사라지지 않는다.
   const handleSave = async () => {
     setSaving(true)
     try {
@@ -275,6 +365,8 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
           ? `아직 안 채운 초안 후보 ${skipped}개는 저장하지 않았습니다 — 목록에 남아있으니 채운 뒤 다시 저장하세요`
           : null,
       )
+    } catch (err) {
+      showToast(`저장 실패 — ${err instanceof Error ? err.message : '네트워크를 확인해주세요'}`)
     } finally {
       setSaving(false)
     }
@@ -296,8 +388,27 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
 
   const tableLabel = (name: string) => catalog.find(t => t.name === name)?.label ?? name
 
+  // 컬럼 raw name(new_l_parentaccountid 등)만으론 뭘 가리키는지 알기 어려워서,
+  // describe 캐시의 한국어 설명(desc)을 찾아 라벨로 보여준다(RelationshipDiagram의
+  // columnLabel과 동일한 로직 — 자기참조 연결에서 JoinRow가 이걸로 구분한다).
+  const columnLabel = (table: string, col: string): string => {
+    const info = (columnsCache[table] ?? []).find(c => c.name === col)
+    if (!info?.desc) return col
+    return info.desc.split(' — ')[0].replace(/\s*\(.*\)\s*$/, '').trim() || col
+  }
+
   return (
-    <div className={`instr-panel${collapsed ? ' collapsed' : ''}`}>
+    <div
+      className={`instr-panel${collapsed ? ' collapsed' : ''}${isResizing ? ' resizing' : ''}`}
+      style={{ width: collapsed ? 0 : panelWidth }}
+    >
+      {!collapsed && (
+        <div
+          className="instr-resize-handle"
+          onMouseDown={handleResizeStart}
+          title="드래그해서 패널 너비 조절"
+        />
+      )}
       <div className="instr-panel-hdr">
         <div>
           <div className="ts-modal-title">
@@ -333,86 +444,54 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
                 이 프로젝트는 테이블이 하나도 선택되지 않았습니다 — 사이드바 "＋테이블"에서 먼저 테이블을 골라야 여기서 연결을 만들 수 있습니다.
               </div>
             )}
-            {/* 저장된 연결(×로 삭제)과 아직 저장 안 한 자동 후보(＋로 추가)를 다이어그램
-                없이 한 목록으로 보여준다 — 스타일(×/＋)만으로 둘을 구분한다. */}
-            {joins.length === 0 && joinCandidates.length === 0 && (
-              <div className="sb-empty">등록된 테이블 연결이 없습니다</div>
-            )}
+
+            {/* 1) 등록된 연결 — 저장된 것만, 항상 맨 위. */}
+            <div className="instr-section-title">
+              등록된 연결{joins.length > 0 && <span className="instr-section-count">{joins.length}</span>}
+            </div>
+            {joins.length === 0 && <div className="sb-empty">등록된 연결이 없습니다</div>}
             {joins.map((j, i) => (
-              <div className="instr-row" key={`s-${i}`}>
-                <span className="instr-row-text">
-                  <b>{tableLabel(j.fromTable)}</b>.{j.fromCol} → <b>{tableLabel(j.toTable)}</b>.{j.toCol}
-                  {j.label && <span className="instr-row-label"> ({j.label})</span>}
-                </span>
-                <button className="instr-row-del" title="삭제" onClick={() => setJoins(prev => prev.filter((_, idx) => idx !== i))}>×</button>
-              </div>
-            ))}
-            {joinCandidates.filter(c => !joins.some(j => joinKey(j) === joinKey(c))).map((c, i) => (
-              <button
-                type="button" key={`c-${i}`} className="instr-term-row-btn"
-                title="Dataverse에 실제로 있는 관계(FK)에서 찾았습니다 — 클릭하면 추가됩니다"
-                onClick={() => addJoinIfNew(c)}
-              >
-                <span className="instr-term-row-col">{tableLabel(c.fromTable)}.{c.fromCol}</span>
-                <span className="instr-term-row-desc">→ {tableLabel(c.toTable)}</span>
-                <span className="instr-term-row-plus">＋</span>
-              </button>
+              <JoinRow
+                key={`s-${i}`}
+                join={j}
+                fromLabel={tableLabel(j.fromTable)}
+                toLabel={tableLabel(j.toTable)}
+                fromColLabel={columnLabel(j.fromTable, j.fromCol)}
+                onDelete={() => setJoins(prev => prev.filter((_, idx) => idx !== i))}
+              />
             ))}
 
-            {projectTables.length > 0 && (
-              <div className="instr-add-col">
-                <select
-                  className="proj-new-input instr-select"
-                  value={manualJoin.fromTable}
-                  onChange={e => setManualJoin({ fromTable: e.target.value, fromCol: '', toTable: '' })}
-                >
-                  <option value="">시작 테이블</option>
-                  {projectTables.map(t => <option key={t} value={t}>{tableLabel(t)}</option>)}
-                </select>
-                <select
-                  className="proj-new-input instr-select"
-                  value={manualJoin.fromCol}
-                  disabled={!manualJoin.fromTable}
-                  onChange={e => setManualJoin(m => ({ ...m, fromCol: e.target.value }))}
-                >
-                  <option value="">시작 컬럼</option>
-                  {lookupColumnsOf(columnsCache, manualJoin.fromTable).map(c => (
-                    <option key={c.name} value={c.name}>{(c.desc.split(' — ')[0] || c.name)} ({c.name})</option>
-                  ))}
-                </select>
-                <select
-                  className="proj-new-input instr-select"
-                  value={manualJoin.toTable}
-                  disabled={!manualJoin.fromCol}
-                  onChange={e => setManualJoin(m => ({ ...m, toTable: e.target.value }))}
-                >
-                  <option value="">대상 테이블</option>
-                  {projectTables.map(t => <option key={t} value={t}>{tableLabel(t)}</option>)}
-                </select>
-                <button
-                  type="button" className="btn btn-sm primary instr-add-col-btn"
-                  disabled={!manualJoin.fromTable || !manualJoin.fromCol || !manualJoin.toTable}
-                  onClick={addManualJoin}
-                >
-                  이 연결 추가
-                </button>
+            {/* 2) 관계를 찾았습니다 — SQL을 몰라도 눌러서 추가만 하면 되는 자동 후보라
+                등록된 목록과 확실히 구분되는 자기 섹션을 준다. */}
+            {joinCandidatesToShow.length > 0 && (
+              <div className="instr-section">
+                <div className="instr-section-title">
+                  🔎 관계를 찾았습니다
+                  <span className="instr-section-hint">눌러서 추가하세요 — 직접 설정할 필요 없어요</span>
+                </div>
+                {joinCandidatesToShow.map((c, i) => (
+                  <button
+                    type="button" key={`c-${i}`} className="instr-term-row-btn"
+                    title="Dataverse에 실제로 있는 관계(FK)에서 찾았습니다 — 클릭하면 추가됩니다"
+                    onClick={() => addJoinIfNew(c)}
+                  >
+                    <span className="instr-term-row-col">{tableLabel(c.fromTable)}.{c.fromCol}</span>
+                    <span className="instr-term-row-desc">→ {tableLabel(c.toTable)}</span>
+                    <span className="instr-term-row-plus">＋</span>
+                  </button>
+                ))}
               </div>
             )}
 
-            {projectTables.length > 0 && (
-              <button
-                type="button" className="btn btn-sm instr-diagram-link"
-                onClick={() => { for (const t of projectTables) ensureColumns(t); setDiagramOpen(true) }}
-              >
-                🗺 다이어그램으로 보기(고급)
-              </button>
-            )}
           </>
         )}
 
         {tab === 'terms' && (
           <>
             <HintIcon tab="terms" onOpen={setHintPopupTab} />
+            <div className="instr-section-title">
+              등록된 용어{terms.length > 0 && <span className="instr-section-count">{terms.length}</span>}
+            </div>
             {terms.length === 0 && <div className="sb-empty">등록된 용어가 없습니다</div>}
             {terms.map((t, i) => {
               const incomplete = !t.table.trim() || !t.column.trim() || !t.def.trim()
@@ -428,83 +507,20 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
               )
             })}
 
-            <div className="instr-term-browser">
-              {projectTables.length === 0 && (
-                <div className="instr-hint">이 프로젝트는 테이블 범위가 지정되지 않았습니다 — 사이드바에서 먼저 테이블을 선택하세요.</div>
-              )}
-              {projectTables.map(table => {
-                const cols = columnsCache[table]
-                if (!cols) {
-                  return columnsLoading[table]
-                    ? <div className="instr-hint" key={table}>{tableLabel(table)} 컬럼 불러오는 중…</div>
-                    : null
-                }
-                const existingCols = new Set(terms.filter(t => t.table === table).map(t => t.column))
-                const candidates = cols.filter(c => !existingCols.has(c.name) && !isNoiseColumn(c, cols))
-                const need    = candidates.filter(needsTerm)
-                const covered = candidates.filter(c => !needsTerm(c))
-                if (need.length === 0 && covered.length === 0) return null
-                return (
-                  <div className="instr-term-group" key={table}>
-                    <div className="instr-term-group-hdr">
-                      {tableLabel(table)}
-                      {need.length > 0 && <span className="instr-term-need-badge">{need.length}개 정의 필요</span>}
-                    </div>
-                    {need.map(c => (
-                      <TermQuickRow
-                        key={c.name} col={c}
-                        active={termDraft.table === table && termDraft.column === c.name}
-                        draft={termDraft}
-                        onActivate={() => activateTerm(table, c.name)}
-                        onChange={setTermDraft}
-                        onAdd={addTerm}
-                      />
-                    ))}
-                    {covered.length > 0 && (
-                      <details className="instr-term-covered">
-                        <summary>이미 설명 있는 컬럼 {covered.length}개 — 그래도 추가하려면 펼치기</summary>
-                        {covered.map(c => (
-                          <TermQuickRow
-                            key={c.name} col={c}
-                            active={termDraft.table === table && termDraft.column === c.name}
-                            draft={termDraft}
-                            onActivate={() => activateTerm(table, c.name)}
-                            onChange={setTermDraft}
-                            onAdd={addTerm}
-                          />
-                        ))}
-                      </details>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
+            {projectTables.length === 0 && (
+              <div className="instr-hint">이 프로젝트는 테이블 범위가 지정되지 않았습니다 — 사이드바에서 먼저 테이블을 선택하세요.</div>
+            )}
           </>
         )}
 
         {tab === 'examples' && (
           <>
             <HintIcon tab="examples" onOpen={setHintPopupTab} />
-            {verifiedCells.length > 0 ? (
-              <div className="instr-cellpick-row">
-                {verifiedCells.slice(-6).reverse().map(c => (
-                  <button
-                    type="button"
-                    key={c.id}
-                    className="instr-cellpick"
-                    title="이 셀의 질문·답변을 아래 입력칸에 채웁니다 — 필요하면 고쳐서 쓰세요"
-                    onClick={() => setExampleDraft({ question: c.text, answer: c.output!.content })}
-                  >
-                    ✓ {c.text.slice(0, 28)}{c.text.length > 28 ? '…' : ''}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="instr-hint" style={{ paddingTop: 0 }}>
-                아직 이 프로젝트에서 실제로 조회에 성공한 셀이 없습니다 — 노트북에서 먼저 질문해보면 여기 후보로 뜹니다.
-                그전까지는 아래에서 질문·답변을 직접 입력해 시작할 수 있습니다.
-              </div>
-            )}
+
+            {/* 1) 등록된 예시 — 저장된 것만, 항상 맨 위. */}
+            <div className="instr-section-title">
+              등록된 예시{examples.length > 0 && <span className="instr-section-count">{examples.length}</span>}
+            </div>
             {examples.length === 0 && <div className="sb-empty">등록된 예시가 없습니다</div>}
             {examples.map((ex, i) => {
               const incomplete = !ex.answer.trim()
@@ -523,6 +539,7 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
                       onClick={() => {
                         setExampleDraft({ question: ex.question, answer: ex.answer })
                         setExamples(prev => prev.filter((_, idx) => idx !== i))
+                        setExampleAddOpen(true)
                       }}
                     >
                       ✎
@@ -532,28 +549,145 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
                 </div>
               )
             })}
-            <div className="instr-add-col">
-              {/* 질문 → 답변 순서로 놓는다 — 답변은 "원하는 형태"를 지어내는 칸이 아니라,
-                  노트북에서 실제로 물어봐서 나온 결과를 그대로 옮기는 칸이라는 걸
-                  placeholder로도 드러낸다. */}
-              <input
-                className="proj-new-input"
-                placeholder="질문 예시 (이번 분기 매출 상위 5개 거래처는?)"
-                value={exampleDraft.question}
-                onChange={e => setExampleDraft(d => ({ ...d, question: e.target.value }))}
-              />
-              <textarea
-                className="instr-textarea"
-                placeholder="위 쿼리를 실제로 실행해서 나온 답 그대로 (형태 설명 아님 — 지어내지 말고 실제 값 그대로)"
-                rows={3}
-                value={exampleDraft.answer}
-                onChange={e => setExampleDraft(d => ({ ...d, answer: e.target.value }))}
-              />
-              <button className="btn btn-sm primary instr-add-col-btn" onClick={addExample}>추가</button>
-            </div>
           </>
         )}
       </div>
+
+      {/* 등록된 목록이 길어질수록 "추가하기" 토글이 화면 아래로 밀려나 안 보이게 된다는
+          피드백(2026-08-24) — 스크롤되는 목록(.instr-panel-body) 밖, 저장 버튼
+          바로 위에 항상 붙여둔다. 펼쳤을 때 내용이 길면(용어 탭의 테이블별 컬럼 등)
+          이 영역 자체가 자기 스크롤을 가진다(.instr-add-pinned-body). */}
+      {/* 드롭다운 4개짜리 수동 입력 폼("①어느 테이블에서... ②...③...④...")이 그림으로
+          드래그해서 만드는 다이어그램보다 훨씬 불편하다는 피드백(2026-08-24) — 같은
+          일을 하는 두 가지 방법을 두는 대신, 자동 후보에 없는 연결은 전부 다이어그램
+          하나로 통일한다. 목록 쪽엔 이제 "새로 만들기" 버튼 하나만 남는다. */}
+      {tab === 'joins' && projectTables.length > 0 && (
+        <div className="instr-add-pinned">
+          <button
+            type="button" className="instr-add-toggle"
+            onClick={() => { for (const t of projectTables) ensureColumns(t); setDiagramOpen(true) }}
+          >
+            <span>🗺 다이어그램에서 새 연결 만들기</span>
+            <span className="instr-add-toggle-arrow">↗</span>
+          </button>
+        </div>
+      )}
+
+      {tab === 'terms' && projectTables.length > 0 && (
+        <div className="instr-add-pinned">
+          <button type="button" className="instr-add-toggle" onClick={() => setTermAddOpen(o => !o)}>
+            <span>➕ 컬럼에서 찾아 추가하기</span>
+            <span className="instr-add-toggle-arrow">{termAddOpen ? '▾' : '▸'}</span>
+          </button>
+          {termAddOpen && (
+            <div className="instr-add-pinned-body">
+              <div className="instr-term-browser">
+                {projectTables.map(table => {
+                  const cols = columnsCache[table]
+                  if (!cols) {
+                    return columnsLoading[table]
+                      ? <div className="instr-hint" key={table}>{tableLabel(table)} 컬럼 불러오는 중…</div>
+                      : null
+                  }
+                  const existingCols = new Set(terms.filter(t => t.table === table).map(t => t.column))
+                  const candidates = cols.filter(c => !existingCols.has(c.name) && !isNoiseColumn(c, cols))
+                  const need    = candidates.filter(needsTerm)
+                  const covered = candidates.filter(c => !needsTerm(c))
+                  if (need.length === 0 && covered.length === 0) return null
+                  return (
+                    <div className="instr-term-group" key={table}>
+                      <div className="instr-term-group-hdr">
+                        {tableLabel(table)}
+                        {need.length > 0 && <span className="instr-term-need-badge">{need.length}개 정의 필요</span>}
+                      </div>
+                      {need.map(c => (
+                        <TermQuickRow
+                          key={c.name} col={c}
+                          active={termDraft.table === table && termDraft.column === c.name}
+                          draft={termDraft}
+                          onActivate={() => activateTerm(table, c.name)}
+                          onChange={setTermDraft}
+                          onAdd={addTerm}
+                        />
+                      ))}
+                      {covered.length > 0 && (
+                        <details className="instr-term-covered">
+                          <summary>이미 설명 있는 컬럼 {covered.length}개 — 그래도 추가하려면 펼치기</summary>
+                          {covered.map(c => (
+                            <TermQuickRow
+                              key={c.name} col={c}
+                              active={termDraft.table === table && termDraft.column === c.name}
+                              draft={termDraft}
+                              onActivate={() => activateTerm(table, c.name)}
+                              onChange={setTermDraft}
+                              onAdd={addTerm}
+                            />
+                          ))}
+                        </details>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'examples' && (
+        <div className="instr-add-pinned">
+          <button type="button" className="instr-add-toggle" onClick={() => setExampleAddOpen(o => !o)}>
+            <span>➕ 새 예시 추가하기</span>
+            <span className="instr-add-toggle-arrow">{exampleAddOpen ? '▾' : '▸'}</span>
+          </button>
+          {exampleAddOpen && (
+            <div className="instr-add-pinned-body">
+              <div className="instr-add-col">
+                {verifiedCells.length > 0 ? (
+                  <>
+                    <div className="instr-field-label">노트북에서 가져오기 — 눌러서 아래 칸에 채우기</div>
+                    <div className="instr-cellpick-row">
+                      {verifiedCells.slice(-6).reverse().map(c => (
+                        <button
+                          type="button"
+                          key={c.id}
+                          className="instr-cellpick"
+                          title="이 셀의 질문·답변을 아래 입력칸에 채웁니다 — 필요하면 고쳐서 쓰세요"
+                          onClick={() => setExampleDraft({ question: c.text, answer: c.output!.content })}
+                        >
+                          ✓ {c.text.slice(0, 28)}{c.text.length > 28 ? '…' : ''}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div className="instr-hint" style={{ padding: '0 0 4px' }}>
+                    아직 이 프로젝트에서 실제로 조회에 성공한 셀이 없습니다 — 노트북에서 먼저 질문해보면 여기 후보로 뜹니다.
+                    그전까지는 아래에서 질문·답변을 직접 입력해 시작할 수 있습니다.
+                  </div>
+                )}
+                {/* 질문 → 답변 순서로 놓는다 — 답변은 "원하는 형태"를 지어내는 칸이 아니라,
+                    노트북에서 실제로 물어봐서 나온 결과를 그대로 옮기는 칸이라는 걸
+                    placeholder로도 드러낸다. */}
+                <input
+                  className="proj-new-input"
+                  placeholder="질문 예시 (이번 분기 매출 상위 5개 거래처는?)"
+                  value={exampleDraft.question}
+                  onChange={e => setExampleDraft(d => ({ ...d, question: e.target.value }))}
+                />
+                <textarea
+                  className="instr-textarea"
+                  placeholder="위 쿼리를 실제로 실행해서 나온 답 그대로 (형태 설명 아님 — 지어내지 말고 실제 값 그대로)"
+                  rows={3}
+                  value={exampleDraft.answer}
+                  onChange={e => setExampleDraft(d => ({ ...d, answer: e.target.value }))}
+                />
+                <button className="btn btn-sm primary instr-add-col-btn" onClick={addExample}>추가</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="instr-panel-ftr">
         <span className="instr-total-count">{totalCount > 0 ? `총 ${totalCount}개 지침` : '등록된 지침 없음'}</span>
@@ -570,6 +704,8 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
           columnsByTable={columnsCache}
           tableLabel={tableLabel}
           onAddJoin={addJoinIfNew}
+          onDeleteJoin={join => setJoins(prev => prev.filter(j => joinKey(j) !== joinKey(join)))}
+          onSaveJoinLabel={(join, label) => setJoins(prev => prev.map(j => (joinKey(j) === joinKey(join) ? { ...j, label } : j)))}
           onClose={() => setDiagramOpen(false)}
           onSave={handleSave}
           saving={saving}

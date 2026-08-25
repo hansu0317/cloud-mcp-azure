@@ -3,12 +3,18 @@ import Header             from './components/Header'
 import Sidebar            from './components/Sidebar'
 import NotebookView       from './components/NotebookView'
 import InstructionsPanel  from './components/InstructionsPanel'
+import LoginGate          from './components/LoginGate'
 import { TOAST_DURATION_MS } from './constants'
 import {
   listProjects, createProject, getProject, updateProject, deleteProject as apiDeleteProject, reorderProjects,
+  getMe, logout,
 } from './api'
-import type { Instructions, NotebookHandle, ProjectSummary, ProjectDetail, Cell } from './types'
+import type { AuthMe, Instructions, NotebookHandle, ProjectSummary, ProjectDetail, Cell } from './types'
 import './App.css'
+
+// LOGIN_*이 .env에 없는 환경(로컬 개발 클론 등)에서는 로그인한 사람 개념 자체가
+// 없다 — authUser=null이면 Header가 로그인 배지·로그아웃 버튼을 그냥 안 보여준다.
+type AuthUser = { email: string; name: string; isAdmin: boolean }
 
 // 마지막으로 열어둔 프로젝트만 기억하는 UI 편의용 키 — 실제 데이터(이름·테이블 스코프·
 // 셀·대화 기록)는 전부 서버 파일(data/projects/<id>.json)에 있으므로, 이 값이 없거나
@@ -19,6 +25,12 @@ const LAST_ACTIVE_KEY = 'crm-ai-chat:lastActiveProjectId'
 const EMPTY_INSTRUCTIONS: Instructions = { joins: [], terms: [], examples: [] }
 
 export default function App() {
+  // 'checking' 동안은 아무것도 렌더링 안 한다 — Header/Sidebar 등을 먼저 마운트했다가
+  // 로그인 안 된 걸 알고 도로 LoginGate로 바꾸면, 그 사이 /api/* 401들이 토스트로
+  // 우수수 뜨는 걸 막기 위함이다.
+  const [authState, setAuthState] = useState<'checking' | 'gate' | 'ok'>('checking')
+  const [authUser,  setAuthUser]  = useState<AuthUser | null>(null)
+
   const [projectList,   setProjectList]   = useState<ProjectSummary[]>([])
   const [activeProject, setActiveProject] = useState<ProjectDetail | null>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -36,6 +48,24 @@ export default function App() {
     toastTimer.current = setTimeout(() => setToast(null), ms)
   }, [])
 
+  // 2026-08-25: Microsoft 로그인 게이트 — 앱 첫 로드 시 한 번만 확인한다. LOGIN_*이
+  // 서버에 설정 안 돼 있으면(loginRequired:false) 로그인 화면 없이 바로 통과.
+  useEffect(() => {
+    getMe().then((me: AuthMe) => {
+      if (!me.loginRequired) { setAuthState('ok'); return }
+      if ('email' in me) {
+        setAuthUser({ email: me.email, name: me.name, isAdmin: me.isAdmin })
+        setAuthState('ok')
+      } else {
+        setAuthState('gate')
+      }
+    }).catch(() => setAuthState('gate'))
+  }, [])
+
+  const handleLogout = useCallback(() => {
+    logout().finally(() => { window.location.href = '/' })
+  }, [])
+
   const refreshProjectList = useCallback(() => {
     listProjects().then(setProjectList).catch(() => {})
   }, [])
@@ -49,7 +79,12 @@ export default function App() {
 
   // 최초 로드: 프로젝트 목록을 불러와 마지막에 쓰던 프로젝트(없으면 최신순 1번)를 연다.
   // 프로젝트가 하나도 없으면(첫 실행) 기본 프로젝트를 하나 만들어 시작한다.
+  // authState==='ok'가 되기 전엔 실행하지 않는다 — 로그인 확인 useEffect와 동시에
+  // 마운트돼서, 로그인 게이트에 걸린 상태에서도 /api/projects를 불러버리면 401을
+  // 그대로 밟고 지나가 createProject()의 응답(에러 JSON)을 정상 프로젝트인 것처럼
+  // 다루다가 터졌다(실제 재현: "Cannot read properties of undefined" 콘솔 에러).
   useEffect(() => {
+    if (authState !== 'ok') return
     if (initRanRef.current) return
     initRanRef.current = true
     ;(async () => {
@@ -67,7 +102,7 @@ export default function App() {
       const full    = await getProject(target.id)
       if (full) { setActiveProject(full); localStorage.setItem(LAST_ACTIVE_KEY, full.id) }
     })()
-  }, [])
+  }, [authState])
 
   // 생성 직후 사이드바가 바로 테이블 선택 팝업을 띄울 수 있도록 만든 프로젝트를 반환한다.
   const handleCreateProject = useCallback(async (name: string): Promise<ProjectSummary> => {
@@ -85,10 +120,15 @@ export default function App() {
   }, [activeProject, openProject])
 
   const handleRenameProject = useCallback(async (id: string, name: string) => {
-    await updateProject(id, { name })
+    try {
+      await updateProject(id, { name })
+    } catch {
+      showToast('이름 변경 실패 — 다시 시도해주세요')
+      return
+    }
     refreshProjectList()
     setActiveProject(prev => (prev && prev.id === id ? { ...prev, name } : prev))
-  }, [refreshProjectList])
+  }, [refreshProjectList, showToast])
 
   const handleDeleteProject = useCallback(async (id: string) => {
     await apiDeleteProject(id)
@@ -112,8 +152,8 @@ export default function App() {
   const handleSelectTables = useCallback((projectId: string, tables: string[]) => {
     setActiveProject(prev => (prev && prev.id === projectId ? { ...prev, tables } : prev))
     setProjectList(prev => prev.map(p => (p.id === projectId ? { ...p, tables } : p)))
-    updateProject(projectId, { tables })
-  }, [])
+    updateProject(projectId, { tables }).catch(() => showToast('테이블 선택 저장 실패 — 새로고침 후 다시 시도해주세요'))
+  }, [showToast])
 
   // 사이드바 ▲▼ 버튼 — 화면에 이미 보이는(검색으로 걸러졌을 수도 있는) 목록 기준으로
   // 두 항목의 위치를 바꾼 새 전체 순서를 만들어 즉시 화면에 반영하고, 서버에도 그
@@ -134,8 +174,8 @@ export default function App() {
   const handleCellsChange = useCallback((cells: Cell[]) => {
     if (!activeProject) return
     setActiveProject(prev => (prev && prev.id === activeProject.id ? { ...prev, cells } : prev))
-    updateProject(activeProject.id, { cells })
-  }, [activeProject])
+    updateProject(activeProject.id, { cells }).catch(() => showToast('셀 저장 실패 — 새로고침 후 다시 시도해주세요'))
+  }, [activeProject, showToast])
 
   // 헤더의 "📁 프로젝트명" 버튼 — 예전엔 항상 열기만 했는데(이미 열려 있으면 눌러도
   // 그대로), ≡ 버튼과 똑같이 토글로 바꿨다 — 왼쪽 패널도 오른쪽 지침 패널처럼
@@ -152,9 +192,13 @@ export default function App() {
     showToast('지침이 저장됐습니다')
   }, [activeProject, showToast])
 
+  if (authState === 'checking') return null
+  if (authState === 'gate') return <LoginGate />
+
   return (
     <div className="app">
       <Header
+        activeProjectId={activeProject?.id ?? null}
         activeProjectName={activeProject?.name ?? ''}
         onOpenProjects={toggleSidebar}
         onToggleSidebar={toggleSidebar}
@@ -162,6 +206,8 @@ export default function App() {
         onToggleInstructions={() => setInstructionsCollapsed(c => !c)}
         instructionsOpen={!instructionsCollapsed}
         notebookRef={notebookRef}
+        authUser={authUser}
+        onLogout={handleLogout}
       />
       <div className="body">
         <Sidebar
@@ -195,6 +241,7 @@ export default function App() {
             instructions={activeProject.instructions ?? EMPTY_INSTRUCTIONS}
             cells={activeProject.cells}
             onSave={handleSaveInstructions}
+            showToast={showToast}
           />
         )}
       </div>

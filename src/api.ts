@@ -1,7 +1,7 @@
 import { marked }     from 'marked'
 import DOMPurify      from 'dompurify'
 import { API } from './constants'
-import type { Instructions, StreamChatOptions, ProjectDetail, ProjectSummary, SseEvent } from './types'
+import type { AuthMe, Instructions, StreamChatOptions, ProjectDetail, ProjectSummary, SseEvent, UsageSummary } from './types'
 
 export function renderMd(text: string): string {
   if (!text) return ''
@@ -61,15 +61,24 @@ export async function getProject(id: string): Promise<ProjectDetail | null> {
   return resp.json() as Promise<ProjectDetail>
 }
 
+// 응답 상태를 확인 안 하고 그냥 fetch만 던지던 예전 버전은, 서버가 저장을 거부해도
+// (400/500 등) 호출부가 항상 성공한 것처럼 넘어갔다 — InstructionsPanel에서 "저장을
+// 눌러도 반영이 안 된다"는 피드백(2026-08-24)의 실제 원인이었다. 이제 실패하면
+// 던져서 호출부(App.tsx handleSaveInstructions → InstructionsPanel handleSave)가
+// 실제로 실패를 알고 사용자에게 보여줄 수 있게 한다.
 export async function updateProject(
   id: string,
   patch: { name?: string; tables?: string[]; instructions?: Instructions; cells?: unknown[] },
 ): Promise<void> {
-  await fetch(`${API.PROJECTS}/${id}`, {
+  const resp = await fetch(`${API.PROJECTS}/${id}`, {
     method:  'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify(patch),
   })
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => null) as { error?: string } | null
+    throw new Error(body?.error || `저장 실패 (HTTP ${resp.status})`)
+  }
 }
 
 export async function deleteProject(id: string): Promise<void> {
@@ -85,6 +94,29 @@ export async function reorderProjects(orderedIds: string[]): Promise<ProjectSumm
     body:    JSON.stringify({ order: orderedIds }),
   }).then(r => r.json()) as { projects: ProjectSummary[] }
   return projects
+}
+
+// ─── 로그인(Microsoft Entra ID) — 2026-08-25 ────────────────────────────────────
+// /auth/* 는 /api/* 와 별개 경로다(백엔드 rate-limit·API 키 미들웨어가 /api만 보므로
+// 로그인 자체가 그런 것에 걸리지 않게). App.tsx가 시작할 때 한 번 불러서 로그인
+// 화면을 보여줄지 앱을 바로 보여줄지 정한다.
+export async function getMe(): Promise<AuthMe> {
+  const resp = await fetch('/auth/me')
+  return resp.json() as Promise<AuthMe>
+}
+
+export async function logout(): Promise<void> {
+  await fetch('/auth/logout', { method: 'POST' })
+}
+
+// ─── 토큰 사용량·예상 비용 (2026-08-24 — "비용 가시성이 없다" 피드백) ──────────────
+// backend/usage.py가 data/usage.jsonl에 질문마다 쌓아둔 걸 서버가 그때그때 합산해
+// 돌려준다 — 프론트는 그냥 숫자만 받아서 보여준다(집계 로직 중복 없음).
+export async function getUsage(projectId?: string): Promise<UsageSummary> {
+  const url = projectId ? `${API.USAGE}?projectId=${encodeURIComponent(projectId)}` : API.USAGE
+  const resp = await fetch(url)
+  if (!resp.ok) throw new Error(`사용량 조회 실패 (HTTP ${resp.status})`)
+  return resp.json() as Promise<UsageSummary>
 }
 
 // ─── 지침 (조인 관계·용어·예시) — 2026-08-12부터 프로젝트별로 분리, updateProject로 저장 ──
