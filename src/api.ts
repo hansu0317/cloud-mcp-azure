@@ -47,11 +47,13 @@ export async function listProjects(): Promise<ProjectSummary[]> {
   return projects
 }
 
-export async function createProject(name: string, tables: string[] = []): Promise<ProjectDetail> {
+export async function createProject(
+  name: string, tables: string[] = [], visibility: 'shared' | 'private' = 'shared',
+): Promise<ProjectDetail> {
   return fetch(API.PROJECTS, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ name, tables }),
+    body:    JSON.stringify({ name, tables, visibility }),
   }).then(r => r.json()) as Promise<ProjectDetail>
 }
 
@@ -105,9 +107,9 @@ export async function getMe(): Promise<AuthMe> {
   return resp.json() as Promise<AuthMe>
 }
 
-export async function logout(): Promise<void> {
-  await fetch('/auth/logout', { method: 'POST' })
-}
+// "로그아웃" 대신 "계정 전환"(/auth/switch-account)만 있다 — App.tsx handleSwitchAccount
+// 쪽 주석 참고. fetch가 아니라 브라우저가 실제로 이동해야 하는 흐름이라 여기 별도
+// 함수는 없다(window.location.href로 직접 이동).
 
 // ─── 토큰 사용량·예상 비용 (2026-08-24 — "비용 가시성이 없다" 피드백) ──────────────
 // backend/usage.py가 data/usage.jsonl에 질문마다 쌓아둔 걸 서버가 그때그때 합산해

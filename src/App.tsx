@@ -7,14 +7,14 @@ import LoginGate          from './components/LoginGate'
 import { TOAST_DURATION_MS } from './constants'
 import {
   listProjects, createProject, getProject, updateProject, deleteProject as apiDeleteProject, reorderProjects,
-  getMe, logout,
+  getMe,
 } from './api'
 import type { AuthMe, Instructions, NotebookHandle, ProjectSummary, ProjectDetail, Cell } from './types'
 import './App.css'
 
 // LOGIN_*이 .env에 없는 환경(로컬 개발 클론 등)에서는 로그인한 사람 개념 자체가
 // 없다 — authUser=null이면 Header가 로그인 배지·로그아웃 버튼을 그냥 안 보여준다.
-type AuthUser = { email: string; name: string; isAdmin: boolean }
+type AuthUser = { email: string; name: string; isAdmin: boolean; department: string | null }
 
 // 마지막으로 열어둔 프로젝트만 기억하는 UI 편의용 키 — 실제 데이터(이름·테이블 스코프·
 // 셀·대화 기록)는 전부 서버 파일(data/projects/<id>.json)에 있으므로, 이 값이 없거나
@@ -54,7 +54,7 @@ export default function App() {
     getMe().then((me: AuthMe) => {
       if (!me.loginRequired) { setAuthState('ok'); return }
       if ('email' in me) {
-        setAuthUser({ email: me.email, name: me.name, isAdmin: me.isAdmin })
+        setAuthUser({ email: me.email, name: me.name, isAdmin: me.isAdmin, department: me.department })
         setAuthState('ok')
       } else {
         setAuthState('gate')
@@ -62,8 +62,11 @@ export default function App() {
     }).catch(() => setAuthState('gate'))
   }, [])
 
-  const handleLogout = useCallback(() => {
-    logout().finally(() => { window.location.href = '/' })
+  // "로그아웃"이 아니라 "계정 전환"인 이유는 Header.tsx 주석 참고 — 진짜 Microsoft
+  // 로그아웃은 같은 브라우저의 다른 회사 M365 웹앱(Outlook/Teams 등)까지 로그아웃
+  // 시켜버려서, 우리 세션만 지우고 계정 선택 화면을 강제로 띄우는 쪽으로 갔다.
+  const handleSwitchAccount = useCallback(() => {
+    window.location.href = '/auth/switch-account'
   }, [])
 
   const refreshProjectList = useCallback(() => {
@@ -105,13 +108,17 @@ export default function App() {
   }, [authState])
 
   // 생성 직후 사이드바가 바로 테이블 선택 팝업을 띄울 수 있도록 만든 프로젝트를 반환한다.
-  const handleCreateProject = useCallback(async (name: string): Promise<ProjectSummary> => {
-    const created = await createProject(name, [])
+  const handleCreateProject = useCallback(async (name: string, visibility: 'shared' | 'private' = 'shared'): Promise<ProjectSummary> => {
+    const created = await createProject(name, [], visibility)
     refreshProjectList()
     setActiveProject(created)
     localStorage.setItem(LAST_ACTIVE_KEY, created.id)
     showToast(`"${created.name}" 프로젝트 생성됨`)
-    return { id: created.id, name: created.name, tables: created.tables, createdAt: created.createdAt, updatedAt: created.updatedAt, order: created.order }
+    return {
+      id: created.id, name: created.name, tables: created.tables,
+      createdAt: created.createdAt, updatedAt: created.updatedAt, order: created.order,
+      visibility: created.visibility, ownerEmail: created.ownerEmail, department: created.department,
+    }
   }, [refreshProjectList, showToast])
 
   const handleSwitchProject = useCallback((id: string) => {
@@ -207,7 +214,7 @@ export default function App() {
         instructionsOpen={!instructionsCollapsed}
         notebookRef={notebookRef}
         authUser={authUser}
-        onLogout={handleLogout}
+        onSwitchAccount={handleSwitchAccount}
       />
       <div className="body">
         <Sidebar

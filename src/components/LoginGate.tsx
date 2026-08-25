@@ -21,8 +21,18 @@ export default function LoginGate() {
           <div className="login-gate-error">로그인에 실패했습니다 — 다시 시도해주세요</div>
         )}
         <button type="button" className="btn primary login-gate-btn" onClick={() => { window.location.href = '/auth/login' }}>
+          <svg className="ms-logo" width="18" height="18" viewBox="0 0 21 21" aria-hidden="true">
+            <rect x="1"  y="1"  width="9" height="9" fill="#F25022" />
+            <rect x="11" y="1"  width="9" height="9" fill="#7FBA00" />
+            <rect x="1"  y="11" width="9" height="9" fill="#00A4EF" />
+            <rect x="11" y="11" width="9" height="9" fill="#FFB900" />
+          </svg>
           Microsoft 계정으로 로그인
         </button>
+        {/* 이미 이 브라우저에 사내 Microsoft 세션(Outlook/Teams/Azure Portal 등)이
+            열려 있으면 비밀번호를 다시 묻지 않고 자동으로 통과된다 — 그 이유를 미리
+            알려줘서 "왜 아이디/비번을 안 물어보지?" 하는 혼란을 줄인다. */}
+        <div className="login-gate-hint">사내 Microsoft 계정에 이미 로그인되어 있다면 자동으로 통과됩니다</div>
       </div>
     </div>
   )

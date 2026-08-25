@@ -476,9 +476,24 @@ async def get_tables():
 # ─── API: 프로젝트 (구 "세션") ────────────────────────────────────────────────
 # 이름 + 테이블 스코프 + 노트북 셀을 data/projects/<id>.json에 영속화한다.
 # Claude 대화 히스토리(history)는 여기서 절대 응답에 포함하지 않는다(chat_api.py 전용).
+
+# 2026-08-25: 계정별 접근 구분 — 로그인이 꺼진 환경(auth_is_configured()==False)에서는
+# 예전처럼 전부 admin 취급(모두 다 보임). 켜진 환경에선 LoginSessionMiddleware가 이미
+# /api/*를 세션 없이는 통과 못 시키므로, 여기서 session이 None인 경우는 사실상 못
+# 일어나지만 방어적으로 "아무것도 못 봄"으로 처리해둔다.
+def _viewer_context(request: Request) -> tuple[str | None, str | None, bool]:
+    if not auth_is_configured():
+        return None, None, True
+    session = get_session(request)
+    if session is None:
+        return None, None, False
+    return session["email"], session.get("department"), session["isAdmin"]
+
+
 @app.get("/api/projects")
-async def list_projects_route():
-    return {"projects": projects.list_projects()}
+async def list_projects_route(request: Request):
+    email, department, is_admin = _viewer_context(request)
+    return {"projects": projects.list_projects(email, department, is_admin)}
 
 
 @app.post("/api/projects")
@@ -490,11 +505,17 @@ async def create_project_route(request: Request):
         return JSONResponse({"error": "name은 문자열이어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
     if "tables" in body and not _is_string_array(body["tables"]):
         return JSONResponse({"error": "tables는 문자열 배열이어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
+    visibility = body.get("visibility", "shared")
+    if visibility not in ("shared", "private"):
+        return JSONResponse({"error": "visibility는 'shared' 또는 'private'이어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
     tables = body.get("tables", [])
     table_error = _validate_project_tables(tables)
     if table_error:
         return JSONResponse({"error": table_error}, status_code=HttpStatus.BAD_REQUEST)
-    return projects.create_project(body.get("name", ""), tables)
+    email, department, _is_admin = _viewer_context(request)
+    return projects.create_project(
+        body.get("name", ""), tables, owner_email=email, department=department, visibility=visibility,
+    )
 
 
 @app.put("/api/projects/reorder")
@@ -503,13 +524,18 @@ async def reorder_projects_route(request: Request):
     body = await request.json()
     if not isinstance(body, dict) or not _is_string_array(body.get("order")):
         return JSONResponse({"error": "order는 프로젝트 id 문자열 배열이어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
-    return {"projects": projects.reorder_projects(body["order"])}
+    email, department, is_admin = _viewer_context(request)
+    return {"projects": projects.reorder_projects(body["order"], email, department, is_admin)}
 
 
 @app.get("/api/projects/{project_id}")
-async def get_project_route(project_id: str):
+async def get_project_route(project_id: str, request: Request):
     project = projects.get_project(project_id)
-    if project is None:
+    email, department, is_admin = _viewer_context(request)
+    # 목록엔 안 보였어도 ID를 직접 알면 상세 API로 우회 접근할 수 있던 걸 막는다 —
+    # "권한 없음"이 아니라 목록에서도 못 봤을 "찾을 수 없음"으로 통일해서 존재
+    # 여부 자체를 흘리지 않는다.
+    if project is None or not projects.can_view(project, email, department, is_admin):
         return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
     return project
 
@@ -574,6 +600,11 @@ async def update_project_route(project_id: str, request: Request):
         table_error = _validate_project_tables(body["tables"])
         if table_error:
             return JSONResponse({"error": table_error}, status_code=HttpStatus.BAD_REQUEST)
+    # 목록에 안 보이는(=권한 없는) 프로젝트를 ID만으로 수정 못 하게 먼저 확인한다.
+    existing = projects.get_project(project_id)
+    email, department, is_admin = _viewer_context(request)
+    if existing is None or not projects.can_view(existing, email, department, is_admin):
+        return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
     updated = projects.update_project(
         project_id, name=body.get("name"), tables=body.get("tables"),
         instructions=body.get("instructions"), cells=body.get("cells"),
@@ -584,7 +615,11 @@ async def update_project_route(project_id: str, request: Request):
 
 
 @app.delete("/api/projects/{project_id}")
-async def delete_project_route(project_id: str):
+async def delete_project_route(project_id: str, request: Request):
+    existing = projects.get_project(project_id)
+    email, department, is_admin = _viewer_context(request)
+    if existing is None or not projects.can_view(existing, email, department, is_admin):
+        return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
     ok = projects.delete_project(project_id)
     if not ok:
         return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)

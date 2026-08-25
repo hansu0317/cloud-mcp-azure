@@ -12,7 +12,7 @@ interface Props {
   projects:        ProjectSummary[]
   activeProjectId: string | null
   onSwitchProject: (id: string) => void
-  onCreateProject: (name: string) => Promise<ProjectSummary>
+  onCreateProject: (name: string, visibility?: 'shared' | 'private') => Promise<ProjectSummary>
   onRenameProject: (id: string, name: string) => void
   onDeleteProject: (id: string) => void
   onSelectTables:  (projectId: string, tables: string[]) => void   // 프로젝트별 테이블 스코프 변경
@@ -200,7 +200,6 @@ export default function Sidebar({
             />
             <button className="btn btn-sm primary" onClick={submitCreate} disabled={!newName.trim()}>추가</button>
           </div>
-
           {projects.length > 3 && (
             <div className="proj-search-row">
               <input
@@ -242,6 +241,7 @@ export default function Sidebar({
                   {!query && <span className="proj-drag-handle" title="드래그해서 순서 바꾸기">⠿</span>}
                   <span className="proj-icon">📁</span>
                   <span className="proj-name">{p.name}</span>
+                  {p.visibility === 'private' && <span className="proj-private-badge" title="나만 볼 수 있는 프로젝트">🔒</span>}
                   <button
                     className="proj-table-badge clickable"
                     title={p.tables.length > 0 ? '테이블 선택 열기' : '테이블 미선택 — 등록된 전체 테이블 조회 가능. 클릭해서 범위 지정'}

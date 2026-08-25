@@ -97,6 +97,15 @@ def _is_project_shape(value: Any, expected_id: str) -> bool:
         return False
     if "history" in value and not isinstance(value["history"], list):
         return False
+    # 2026-08-25: 계정별 접근 구분(owner/department/visibility) — 전부 선택 필드다.
+    # 기존 프로젝트 파일엔 이 키들이 아예 없고, 그건 "부서 미상 = 전사 공유"로
+    # 해석해서(_is_visible) 예전 동작(모두에게 보임) 그대로 유지된다.
+    if "ownerEmail" in value and value["ownerEmail"] is not None and not isinstance(value["ownerEmail"], str):
+        return False
+    if "department" in value and value["department"] is not None and not isinstance(value["department"], str):
+        return False
+    if "visibility" in value and value["visibility"] not in ("shared", "private"):
+        return False
     return True
 
 
@@ -146,15 +155,40 @@ def _to_summary(p: dict[str, Any]) -> dict[str, Any]:
             "id": p["id"], "name": p["name"], "tables": p["tables"],
             "createdAt": p["createdAt"], "updatedAt": p["updatedAt"],
             "order": p.get("order", 0),
+            "visibility": p.get("visibility", "shared"),
+            "ownerEmail": p.get("ownerEmail"),
+            "department": p.get("department"),
         }
     )
+
+
+# 2026-08-25: 계정별 접근 구분 — "이 프로젝트를 이 사람이 볼 수 있는가?"를 한 곳에서만
+# 판단한다(목록·상세 조회·수정·삭제 전부 이 함수 하나를 재사용 — main.py). 관리자는
+# 무조건 다 본다(문제 생겼을 때 들여다볼 수 있어야 함). department가 None인
+# 프로젝트(로그인 기능 이전에 만들어졌거나, 부서 미상인 사람이 만든 것)는 전사
+# 공유로 취급해 기존 동작을 그대로 유지한다.
+def _is_visible(p: dict[str, Any], viewer_email: str | None, viewer_department: str | None, is_admin: bool) -> bool:
+    if is_admin:
+        return True
+    if p.get("visibility", "shared") == "private":
+        return viewer_email is not None and p.get("ownerEmail") == viewer_email
+    department = p.get("department")
+    if department is None:
+        return True
+    return viewer_department is not None and viewer_department == department
 
 
 def _to_detail(p: dict[str, Any]) -> dict[str, Any]:
     return deepcopy({k: v for k, v in p.items() if k != "history"})
 
 
-def list_projects() -> list[dict[str, Any]]:
+def list_projects(
+    viewer_email: str | None = None, viewer_department: str | None = None, is_admin: bool = True,
+) -> list[dict[str, Any]]:
+    """is_admin 기본값이 True인 이유: 로그인 기능 자체가 꺼진 환경(main.py의
+    auth_is_configured()가 False — LOGIN_*이 .env에 없는 로컬 개발 클론 등)에서는
+    호출부가 viewer 정보를 아예 안 넘기고 부르므로, 그럴 땐 예전처럼 전부 보여야
+    한다. 로그인이 켜진 환경에서는 route 쪽이 항상 is_admin을 명시적으로 넘긴다."""
     try:
         files = [f.stem for f in PROJECTS_DIR.iterdir() if f.suffix == ".json"]
     except OSError:
@@ -164,6 +198,8 @@ def list_projects() -> list[dict[str, Any]]:
     # 2026-08-21 이전 프로젝트엔 order 필드가 없다 — 그 경우 하나라도 있으면 예전
     # 정렬 기준(최근 사용순)으로 한 번만 order를 매겨 파일에 자가 치유(self-heal)한다.
     # 그 이후로는 순서를 수동으로 옮기면(reorder_projects) 이 값만 바뀐다.
+    # 자가 치유는 "이 사람이 볼 수 있는가"와 무관하게 전체 프로젝트 기준으로 해야
+    # order 값이 일관된다 — 필터링은 그다음에 한다.
     if any("order" not in p for p in projects):
         projects.sort(key=lambda p: p["updatedAt"], reverse=True)
         for index, p in enumerate(projects):
@@ -171,17 +207,23 @@ def list_projects() -> list[dict[str, Any]]:
                 p["order"] = index
                 _write_project(p)
 
-    summaries = [_to_summary(p) for p in projects]
+    visible = [p for p in projects if _is_visible(p, viewer_email, viewer_department, is_admin)]
+    summaries = [_to_summary(p) for p in visible]
     summaries.sort(key=lambda s: s["order"])
     return summaries
 
 
-def reorder_projects(ordered_ids: list[str]) -> list[dict[str, Any]]:
+def reorder_projects(
+    ordered_ids: list[str], viewer_email: str | None = None, viewer_department: str | None = None,
+    is_admin: bool = True,
+) -> list[dict[str, Any]]:
     """사이드바에서 위/아래로 옮긴 새 순서를 그대로 order에 반영한다.
 
-    프론트가 이미 화면에 보이는 전체 프로젝트 id를 새 순서대로 보내주므로, 여기서는
-    각 프로젝트의 order를 그 배열 인덱스로 덮어쓰기만 한다 — 두 개씩 스왑하는 것보다
-    간단하고, 나중에 드래그 앤 드롭으로 바꿔도 이 함수는 그대로 재사용된다.
+    프론트가 이미 화면에 보이는(=이 사람이 볼 수 있는) 프로젝트 id를 새 순서대로
+    보내주므로, 여기서는 각 프로젝트의 order를 그 배열 인덱스로 덮어쓰기만 한다 —
+    두 개씩 스왑하는 것보다 간단하고, 나중에 드래그 앤 드롭으로 바꿔도 이 함수는
+    그대로 재사용된다. viewer_*는 끝에 돌려주는 목록에만 쓴다(list_projects와
+    동일 — 안 그러면 본인이 못 보는 프로젝트가 이 응답에 그대로 실려 나간다).
     """
     for index, project_id in enumerate(ordered_ids):
         p = _read_project(project_id)
@@ -190,7 +232,14 @@ def reorder_projects(ordered_ids: list[str]) -> list[dict[str, Any]]:
         if p.get("order") != index:
             p["order"] = index
             _write_project(p)
-    return list_projects()
+    return list_projects(viewer_email, viewer_department, is_admin)
+
+
+# main.py가 상세 조회·수정·삭제 라우트에서 재사용 — list_projects의 _is_visible과
+# 같은 기준을 프로젝트 하나에 대해서만 다시 물을 때 쓴다(목록엔 안 보였어도, ID를
+# 직접 알면 상세 API로 우회 접근할 수 있던 걸 막기 위함).
+def can_view(project: dict[str, Any], viewer_email: str | None, viewer_department: str | None, is_admin: bool) -> bool:
+    return _is_visible(project, viewer_email, viewer_department, is_admin)
 
 
 def get_project(project_id: str) -> dict[str, Any] | None:
@@ -198,7 +247,10 @@ def get_project(project_id: str) -> dict[str, Any] | None:
     return _to_detail(p) if p else None
 
 
-def create_project(name: str, tables: list[str] | None = None) -> dict[str, Any]:
+def create_project(
+    name: str, tables: list[str] | None = None, *,
+    owner_email: str | None = None, department: str | None = None, visibility: str = "shared",
+) -> dict[str, Any]:
     project_id = str(uuid.uuid4())
     now = _now_iso()
     try:
@@ -215,9 +267,12 @@ def create_project(name: str, tables: list[str] | None = None) -> dict[str, Any]
         "createdAt": now,
         "updatedAt": now,
         "order": existing_count,   # 사이드바 맨 아래에 추가 — 위/아래 버튼으로 옮긴 순서만 이후 유지
+        "ownerEmail": owner_email,
+        "department": department,
+        "visibility": visibility if visibility in ("shared", "private") else "shared",
     }
     _write_project(p)
-    log.info("PROJECT", f'생성: "{p["name"]}" ({project_id})')
+    log.info("PROJECT", f'생성: "{p["name"]}" ({project_id}), 소유자: {owner_email or "(로그인 없음)"}')
     return _to_detail(p)
 
 

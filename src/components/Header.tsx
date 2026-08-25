@@ -13,12 +13,12 @@ interface Props {
   instructionsOpen:     boolean
   notebookRef:          RefObject<NotebookHandle | null>
   authUser:             { email: string; name: string; isAdmin: boolean } | null
-  onLogout:             () => void
+  onSwitchAccount:      () => void
 }
 
 export default function Header({
   activeProjectId, activeProjectName, onOpenProjects, onToggleSidebar, sidebarOpen, onToggleInstructions, instructionsOpen, notebookRef,
-  authUser, onLogout,
+  authUser, onSwitchAccount,
 }: Props) {
   return (
     <header>
@@ -59,7 +59,12 @@ export default function Header({
             {authUser.isAdmin && <span className="header-user-admin">관리자</span>}
             {authUser.name}
           </span>
-          <button className="btn btn-sm" onClick={onLogout} title="로그아웃">로그아웃</button>
+          {/* "로그아웃" 대신 "계정 전환"인 이유: 진짜 Microsoft 로그아웃은 같은
+              브라우저의 Outlook/Teams 등 다른 회사 M365 웹앱까지 같이 로그아웃시켜버린다
+              (AAD single sign-out 표준 동작 — 이 앱만 빼고 로그아웃시킬 방법이 없다).
+              그래서 우리 세션만 지우고 Microsoft 계정 선택 화면을 강제로 띄워서, 다른
+              계정으로 바로 들어갈 수 있게만 한다(2026-08-25, backend/auth.py 참고). */}
+          <button className="btn btn-sm" onClick={onSwitchAccount} title="다른 Microsoft 계정으로 전환">계정 전환</button>
         </>
       )}
     </header>
