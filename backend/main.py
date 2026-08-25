@@ -31,12 +31,12 @@ if sys.version_info < (3, 11):
 
 from .auth import get_session, is_configured as auth_is_configured, register_auth_routes
 from .chat_api import api_status, cleanup_loop, provider_health, provider_status, register_chat_api
-from . import dataverse, projects
+from . import dataverse
+from .store import projects
 from .dataverse import dataverse_env_missing, fetch_entity_schema
-from .logger import get_active_log_file_path, log, read_json_log_tail
-from .provider_factory import close_llm_provider
-from .sse import HttpStatus
-from .usage import usage_summary
+from .core.logger import get_active_log_file_path, log, read_json_log_tail
+from .providers.provider_factory import close_llm_provider
+from .core.sse import HttpStatus
 
 # ─── 환경변수 ─────────────────────────────────────────────────────────────────
 PORT = int(os.environ.get("PORT", "3000"))
@@ -661,13 +661,6 @@ async def get_logs(n: int = 100):
 
 
 # ─── API: 토큰 사용량·예상 비용 (2026-08-24 — "비용 가시성이 없다" 피드백) ──────────
-# 오늘/전체 누적 + (projectId를 주면) 그 프로젝트 것도 같이. backend/usage.py 참고 —
-# data/usage.jsonl에 chat_api.py가 질문마다 쌓아둔 걸 매 호출마다 읽어 합산한다.
-@app.get("/api/usage")
-async def get_usage(projectId: str | None = None):
-    return usage_summary(projectId)
-
-
 # ─── API: 헬스체크 (모니터링·기동 확인용) ────────────────────────────────────
 # curl http://localhost:3000/api/health 한 줄로 가용 상태를 확인한다.
 @app.get("/api/health")

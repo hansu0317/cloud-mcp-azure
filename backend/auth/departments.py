@@ -19,8 +19,9 @@ from __future__ import annotations
 import os
 
 # 형식: "이메일1:부서1,이메일2:부서1,이메일3:부서2" — 공백은 앞뒤로 있어도 무시한다.
-# 이메일이 여기 없으면 부서 미상(None) — department가 None인 프로젝트는 전사 공유로
-# 취급되므로(projects.py), 부서를 아직 안 채운 사람도 접근 자체가 막히진 않는다.
+# 이메일이 여기 없으면 부서 미상(None) — 2026-08-25부터 부서 미상인 로그인 사용자는
+# 공유 프로젝트를 하나도 못 본다(projects.py의 _is_visible). 그러니 로그인은 됐는데
+# 프로젝트 목록이 텅 비어 보인다면, 십중팔구 이 사람 이메일이 여기 안 들어가 있는 것.
 def _parse_department_map(raw: str) -> dict[str, str]:
     result: dict[str, str] = {}
     for entry in raw.split(","):

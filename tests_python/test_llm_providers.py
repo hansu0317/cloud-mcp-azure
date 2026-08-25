@@ -7,10 +7,10 @@ from unittest.mock import patch
 
 import httpx
 
-from backend.anthropic_provider import AnthropicProvider
-from backend.llm_provider import LlmStreamRequest, LlmToolDefinition, LlmProviderError, user_text_message
-from backend.ollama_provider import OllamaProvider
-from backend.provider_factory import configured_provider_kind
+from backend.providers.anthropic_provider import AnthropicProvider
+from backend.providers.llm_provider import LlmStreamRequest, LlmToolDefinition, LlmProviderError, user_text_message
+from backend.providers.ollama_provider import OllamaProvider
+from backend.providers.provider_factory import configured_provider_kind
 
 
 BASE_REQUEST = LlmStreamRequest(

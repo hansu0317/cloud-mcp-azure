@@ -205,7 +205,6 @@ export default function App() {
   return (
     <div className="app">
       <Header
-        activeProjectId={activeProject?.id ?? null}
         activeProjectName={activeProject?.name ?? ''}
         onOpenProjects={toggleSidebar}
         onToggleSidebar={toggleSidebar}

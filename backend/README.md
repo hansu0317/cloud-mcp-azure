@@ -8,18 +8,21 @@ Anthropic 또는 Ollama를 선택합니다.
 
 ## 구성
 
-| 파일 | 역할 |
+2026-08-25: 파일이 늘어나면서 관심사별로 하위 폴더에 묶었다 — `from .auth import X`,
+`from .providers.provider_factory import X`처럼 대부분 `from .패키지.파일 import`
+형태다. `main.py`/`chat_api.py`/`dev.py`/`dataverse.py`만 최상위에 남아있다(각각
+엔트리포인트이거나, 묶을 다른 파일이 없는 단독 모듈).
+
+| 경로 | 역할 |
 |---|---|
 | `main.py` | FastAPI 앱, 12개 API, 인증·레이트리밋·SPA 서빙 |
 | `chat_api.py` | provider-neutral 채팅·도구 루프·SSE·OData guard |
-| `llm_provider.py` | canonical message/tool/health 계약 |
-| `anthropic_provider.py` | Anthropic Messages SSE adapter |
-| `ollama_provider.py` | Ollama native `/api/chat` NDJSON adapter |
-| `provider_factory.py` | `LLM_PROVIDER=anthropic|ollama` 선택 |
-| `history.py` | 기존 기록 변환·트리밍·describe 압축 |
+| `dev.py` | `.env`의 PORT를 존중하는 개발 서버 진입점(`npm run dev:server`) |
 | `dataverse.py` | Entra client credentials, Dataverse GET, metadata→schema |
-| `projects.py` | `data/projects/*.json` 저장·ID 검증·history 비노출 |
-| `logger.py` | `server.cloud.log` / `server.local.log` JSON Lines |
+| `auth/` | Microsoft Entra ID 로그인(MSAL), 세션 쿠키, 이메일→부서 매핑(`departments.py`) |
+| `providers/` | LLM provider 추상화 — `llm_provider.py`(canonical 계약), `anthropic_provider.py`, `ollama_provider.py`, `provider_factory.py`(`LLM_PROVIDER=anthropic\|ollama` 선택) |
+| `store/` | 프로젝트·대화 기록 저장 — `projects.py`(`data/projects/*.json`), `history.py`(기록 변환·트리밍). 지금은 로컬 파일이지만 호출부(`main.py`/`chat_api.py`)는 함수 계약만 알고 내부 구현은 모른다 — 나중에 공용 서버/DB로 옮길 때 이 폴더 내부만 바꾸면 된다(departments.py와 같은 패턴). |
+| `core/` | 공용 인프라 — `logger.py`(JSON Lines 로그), `semaphore.py`(동시 실행 제한), `sse.py`(SSE 헤더·상태코드) |
 
 ## 채팅 계약
 

@@ -1,7 +1,7 @@
 import { marked }     from 'marked'
 import DOMPurify      from 'dompurify'
 import { API } from './constants'
-import type { AuthMe, Instructions, StreamChatOptions, ProjectDetail, ProjectSummary, SseEvent, UsageSummary } from './types'
+import type { AuthMe, Instructions, StreamChatOptions, ProjectDetail, ProjectSummary, SseEvent } from './types'
 
 export function renderMd(text: string): string {
   if (!text) return ''
@@ -110,16 +110,6 @@ export async function getMe(): Promise<AuthMe> {
 // "로그아웃" 대신 "계정 전환"(/auth/switch-account)만 있다 — App.tsx handleSwitchAccount
 // 쪽 주석 참고. fetch가 아니라 브라우저가 실제로 이동해야 하는 흐름이라 여기 별도
 // 함수는 없다(window.location.href로 직접 이동).
-
-// ─── 토큰 사용량·예상 비용 (2026-08-24 — "비용 가시성이 없다" 피드백) ──────────────
-// backend/usage.py가 data/usage.jsonl에 질문마다 쌓아둔 걸 서버가 그때그때 합산해
-// 돌려준다 — 프론트는 그냥 숫자만 받아서 보여준다(집계 로직 중복 없음).
-export async function getUsage(projectId?: string): Promise<UsageSummary> {
-  const url = projectId ? `${API.USAGE}?projectId=${encodeURIComponent(projectId)}` : API.USAGE
-  const resp = await fetch(url)
-  if (!resp.ok) throw new Error(`사용량 조회 실패 (HTTP ${resp.status})`)
-  return resp.json() as Promise<UsageSummary>
-}
 
 // ─── 지침 (조인 관계·용어·예시) — 2026-08-12부터 프로젝트별로 분리, updateProject로 저장 ──
 // (예전엔 전역 POST /api/instructions 하나였음 — 프로젝트마다 다른 few-shot이 서로

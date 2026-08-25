@@ -18,6 +18,16 @@ data/ 전체가 .gitignore 대상이라 별도 조치 없이 커밋에서 제외
 동기 파일 I/O만 사용한다 — TS 버전이 "async를 쓰지 않아 이벤트 루프 한 틱 안에서
 끊기지 않는다"는 성질에 기댄 것과 마찬가지로, 이 모듈의 함수들은 FastAPI 라우트에서
 스레드풀로 오프로딩되지 않는 한 그대로 두면 된다(각 함수 자체가 짧고 원자적).
+
+★ 나중에 "로컬 파일 → 공용 서버/DB"로 옮기는 방법(2026-08-25): 지금 로컬 파일에
+직접 손대는 곳은 밑줄로 시작하는 함수들뿐이다 — PROJECTS_DIR, _file_path,
+_read_project, _write_project, _read_json_file. 그 아래 밑줄 없는 함수들
+(list_projects/get_project/create_project/update_project/delete_project/
+save_project_history 등)은 전부 "id 문자열 넣으면 dict 나온다" 식의 평범한 계약만
+쓰고, 호출부(main.py/chat_api.py)도 이 계약만 안다 — 파일 경로나 JSON 형식은 전혀
+모른다. 그래서 나중에 실제 서버(원격 DB, model 쪽 공용 서버 등)로 옮길 때도 이
+파일 안의 밑줄 함수 5개만 그 서버 호출로 바꿔치면 되고, 호출부는 한 줄도 안
+고쳐도 된다 — departments.py의 get_department()와 같은 패턴.
 """
 from __future__ import annotations
 
@@ -30,7 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .logger import log
+from ..core.logger import log
 
 PROJECTS_DIR = Path.cwd() / "data" / "projects"
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -98,8 +108,9 @@ def _is_project_shape(value: Any, expected_id: str) -> bool:
     if "history" in value and not isinstance(value["history"], list):
         return False
     # 2026-08-25: 계정별 접근 구분(owner/department/visibility) — 전부 선택 필드다.
-    # 기존 프로젝트 파일엔 이 키들이 아예 없고, 그건 "부서 미상 = 전사 공유"로
-    # 해석해서(_is_visible) 예전 동작(모두에게 보임) 그대로 유지된다.
+    # 기존 프로젝트 파일엔 이 키들이 아예 없고, department 없음은 "공통"으로 해석된다
+    # — 단, 보는 사람도 부서가 있어야 한다(_is_visible). 부서가 없는(DEPARTMENT_MAP에
+    # 없는) 로그인 사용자는 공통이든 뭐든 아무 공유 프로젝트도 못 본다.
     if "ownerEmail" in value and value["ownerEmail"] is not None and not isinstance(value["ownerEmail"], str):
         return False
     if "department" in value and value["department"] is not None and not isinstance(value["department"], str):
@@ -172,10 +183,19 @@ def _is_visible(p: dict[str, Any], viewer_email: str | None, viewer_department: 
         return True
     if p.get("visibility", "shared") == "private":
         return viewer_email is not None and p.get("ownerEmail") == viewer_email
+    # 부서가 없는 로그인 사용자(DEPARTMENT_MAP에 없는 이메일)는 공유 프로젝트를
+    # 하나도 못 본다 — "정의 안 된 사용자는 프로젝트 목록이 비어 보여야 한다"는
+    # 요구사항(2026-08-25). 예전엔 department=None(공통) 프로젝트를 로그인 여부와
+    # 무관하게 전부에게 보여줬는데, 그러면 부서 매핑을 깜빡 빠뜨린 사람도 그냥
+    # 다 보이는 구멍이 생겨서 이렇게 바꿨다. is_admin=True(로그인 자체가 꺼진
+    # 환경 포함)는 위에서 이미 걸러졌으니 이 아래는 항상 "로그인은 됐지만 부서가
+    # 없는" 경우다.
+    if viewer_department is None:
+        return False
     department = p.get("department")
     if department is None:
         return True
-    return viewer_department is not None and viewer_department == department
+    return viewer_department == department
 
 
 def _to_detail(p: dict[str, Any]) -> dict[str, Any]:

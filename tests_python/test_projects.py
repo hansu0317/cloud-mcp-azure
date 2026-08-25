@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from backend import projects
+from backend.store import projects
 
 
 class ProjectStoreContractTests(unittest.TestCase):

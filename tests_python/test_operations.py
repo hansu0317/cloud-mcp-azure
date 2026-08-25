@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 from backend import main
-from backend.logger import _TimedSizedRotatingFileHandler, read_json_log_tail
+from backend.core.logger import _TimedSizedRotatingFileHandler, read_json_log_tail
 
 
 class OperationContractTests(unittest.TestCase):
@@ -23,6 +23,14 @@ class OperationContractTests(unittest.TestCase):
         self.temp_root.mkdir(parents=True)
         self.client = TestClient(main.app, raise_server_exceptions=False)
         self.headers = {"x-api-key": main.API_KEY} if main.API_KEY else {}
+        # 이 파일이 다루는 건 body 크기/JSON 형식/라우팅 계약이지 로그인이 아니다 —
+        # 로컬 .env에 LOGIN_*이 채워져 있으면 LoginSessionMiddleware가 세션 없는
+        # 요청을 다른 가드보다 먼저 401로 끊어버려서(main.py 주석 참고, 의도된
+        # 순서) 이 테스트들이 보려는 코드에 아예 도달을 못 한다. 그래서 이 테스트
+        # 안에서만 "로그인 안 켜진 환경"으로 취급한다.
+        patcher = patch("backend.main.auth_is_configured", return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self) -> None:
         self.client.close()

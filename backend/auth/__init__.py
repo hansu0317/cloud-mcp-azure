@@ -28,8 +28,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from .departments import get_department
-from .logger import log
-from .sse import HttpStatus
+from ..core.logger import log
+from ..core.sse import HttpStatus
 
 LOGIN_TENANT_ID     = os.environ.get("LOGIN_TENANT_ID", "").strip()
 LOGIN_CLIENT_ID     = os.environ.get("LOGIN_CLIENT_ID", "").strip()

@@ -116,25 +116,6 @@ export interface NotebookHandle {
   addCell: (text?: string) => number
 }
 
-// GET /api/usage 응답 — backend/usage.py 참고. costUsd는 요금표에 있는 모델(클라우드)만
-// 채워지고, costKnown=false면 그 합계 안에 요금표에 없는 모델(로컬 등) 요청이 섞여
-// 있어 costUsd가 과소평가일 수 있다는 뜻.
-export interface UsageRow {
-  questions:        number
-  inputTokens:       number
-  outputTokens:      number
-  cacheReadTokens:   number
-  cacheWriteTokens:  number
-  costUsd:           number
-  costKnown:         boolean
-}
-
-export interface UsageSummary {
-  today:   UsageRow
-  allTime: UsageRow
-  project?: { today: UsageRow; allTime: UsageRow }
-}
-
 // GET /auth/me 응답 — backend/auth.py 참고. loginRequired=false면 .env에 LOGIN_*이
 // 설정 안 된 환경(로컬 개발 클론 등)이라 로그인 화면 자체를 안 띄운다.
 export type AuthMe =

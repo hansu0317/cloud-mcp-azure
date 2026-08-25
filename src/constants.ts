@@ -8,7 +8,6 @@ export const API = {
   TABLES:          '/api/tables',
   SCHEMA_REFRESH:  '/api/schemas/refresh',
   PROJECTS:        '/api/projects',
-  USAGE:           '/api/usage',
 } as const
 
 export const CELLS_AUTOSAVE_DEBOUNCE_MS = 900

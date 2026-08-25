@@ -16,7 +16,7 @@ import httpx
 from fastapi import FastAPI
 
 from backend import chat_api
-from backend.semaphore import Semaphore
+from backend.core.semaphore import Semaphore
 
 
 def _assistant_done(text: str) -> dict[str, Any]:

@@ -11,8 +11,9 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
-from backend import main, projects
-from backend.logger import read_json_log_tail
+from backend import main
+from backend.store import projects
+from backend.core.logger import read_json_log_tail
 
 
 class FastApiContractTests(unittest.TestCase):
@@ -30,6 +31,11 @@ class FastApiContractTests(unittest.TestCase):
             ),
             patch.object(projects.log, "info"),
             patch.object(projects.log, "error"),
+            # 이 파일은 API 계약(요청 검증·응답 형태)을 다루지 로그인을 다루지 않는다 —
+            # 로컬 .env에 LOGIN_*이 채워져 있으면 LoginSessionMiddleware가 세션 없는
+            # /api/* 요청을 다른 검증보다 먼저 401로 끊어서 이 테스트들이 보려는
+            # 코드에 아예 도달을 못 한다(test_operations.py와 같은 이유).
+            patch("backend.main.auth_is_configured", return_value=False),
         ]
         for item in self._patches:
             item.start()

@@ -1,10 +1,8 @@
 import type { RefObject } from 'react'
 import type { NotebookHandle } from '../types'
 import { APP_NAME } from '../constants'
-import UsagePanel from './UsagePanel'
 
 interface Props {
-  activeProjectId:      string | null
   activeProjectName:    string
   onOpenProjects:       () => void
   onToggleSidebar:      () => void
@@ -17,7 +15,7 @@ interface Props {
 }
 
 export default function Header({
-  activeProjectId, activeProjectName, onOpenProjects, onToggleSidebar, sidebarOpen, onToggleInstructions, instructionsOpen, notebookRef,
+  activeProjectName, onOpenProjects, onToggleSidebar, sidebarOpen, onToggleInstructions, instructionsOpen, notebookRef,
   authUser, onSwitchAccount,
 }: Props) {
   return (
@@ -39,11 +37,6 @@ export default function Header({
         <button className="btn" onClick={() => notebookRef.current?.addCell()}>＋ 셀 추가</button>
       </div>
       <div className="h-spacer" />
-      {/* 2026-08-25: 로그인이 켜진 환경에서는 사용량(토큰·비용)을 관리자만 보게 한다
-          — "관리자/일반 구분"을 실제로 만들면서 나온 결론(사용량 자체가 민감한 건
-          아니지만, 역할 구분이 생겼으니 그 안에 자연스럽게 넣는 게 맞다는 판단).
-          로그인이 아예 안 켜진 환경(authUser=null)에서는 예전처럼 그냥 보여준다. */}
-      {(!authUser || authUser.isAdmin) && <UsagePanel projectId={activeProjectId} />}
       <button
         className={`btn${instructionsOpen ? ' active' : ''}`}
         onClick={onToggleInstructions}
