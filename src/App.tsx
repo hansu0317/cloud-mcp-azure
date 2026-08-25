@@ -4,6 +4,7 @@ import Sidebar            from './components/Sidebar'
 import NotebookView       from './components/NotebookView'
 import InstructionsPanel  from './components/InstructionsPanel'
 import LoginGate          from './components/LoginGate'
+import UserAdminModal     from './components/UserAdminModal'
 import { TOAST_DURATION_MS } from './constants'
 import {
   listProjects, createProject, getProject, updateProject, deleteProject as apiDeleteProject, reorderProjects,
@@ -30,6 +31,7 @@ export default function App() {
   // 우수수 뜨는 걸 막기 위함이다.
   const [authState, setAuthState] = useState<'checking' | 'gate' | 'ok'>('checking')
   const [authUser,  setAuthUser]  = useState<AuthUser | null>(null)
+  const [userAdminOpen, setUserAdminOpen] = useState(false)
 
   const [projectList,   setProjectList]   = useState<ProjectSummary[]>([])
   const [activeProject, setActiveProject] = useState<ProjectDetail | null>(null)
@@ -61,6 +63,17 @@ export default function App() {
       }
     }).catch(() => setAuthState('gate'))
   }, [])
+
+  // 2026-08-25: "부서 5명이 같은 프로젝트를 동시에 고치면 서로 덮어쓴다" 문제 —
+  // 실시간 동시편집 대신 "소유자만 수정, 나머지는 읽기 전용"으로 갔다(사용자 결정).
+  // 서버(backend/store/projects.py의 can_edit, main.py 라우트)가 실제 방어선이고,
+  // 이건 그 판정을 화면에서 미리 보여줘서 눌러도 안 되는 버튼을 안 보이게 하는
+  // 용도다 — 여기서 true가 나와도 서버가 다시 확인하므로 이걸 우회해도 안전하다.
+  const canEditProject = useCallback((p: { ownerEmail?: string | null } | null | undefined): boolean => {
+    if (!authUser) return true   // 로그인 자체가 꺼진 환경 — 예전처럼 전부 편집 가능
+    if (authUser.isAdmin) return true
+    return !!p && p.ownerEmail === authUser.email
+  }, [authUser])
 
   // "로그아웃"이 아니라 "계정 전환"인 이유는 Header.tsx 주석 참고 — 진짜 Microsoft
   // 로그아웃은 같은 브라우저의 다른 회사 M365 웹앱(Outlook/Teams 등)까지 로그아웃
@@ -202,6 +215,8 @@ export default function App() {
   if (authState === 'checking') return null
   if (authState === 'gate') return <LoginGate />
 
+  const canEditActive = canEditProject(activeProject)
+
   return (
     <div className="app">
       <Header
@@ -214,7 +229,10 @@ export default function App() {
         notebookRef={notebookRef}
         authUser={authUser}
         onSwitchAccount={handleSwitchAccount}
+        onOpenUserAdmin={() => setUserAdminOpen(true)}
+        canAddCell={canEditActive}
       />
+      {userAdminOpen && <UserAdminModal onClose={() => setUserAdminOpen(false)} />}
       <div className="body">
         <Sidebar
           collapsed={sidebarCollapsed}
@@ -226,6 +244,7 @@ export default function App() {
           onDeleteProject={handleDeleteProject}
           onSelectTables={handleSelectTables}
           onReorderProjects={handleReorderProjects}
+          canEditProject={canEditProject}
         />
         {activeProject && (
           <NotebookView
@@ -235,6 +254,7 @@ export default function App() {
             initialCells={activeProject.cells}
             onCellsChange={handleCellsChange}
             showToast={showToast}
+            readOnly={!canEditActive}
           />
         )}
         {activeProject && (
@@ -248,6 +268,7 @@ export default function App() {
             cells={activeProject.cells}
             onSave={handleSaveInstructions}
             showToast={showToast}
+            readOnly={!canEditActive}
           />
         )}
       </div>

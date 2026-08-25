@@ -262,6 +262,17 @@ def can_view(project: dict[str, Any], viewer_email: str | None, viewer_departmen
     return _is_visible(project, viewer_email, viewer_department, is_admin)
 
 
+# 2026-08-25: "부서 5명이 같은 프로젝트를 동시에 고치면 서로 덮어쓴다" 문제 —
+# 실시간 동시편집(구글독스류 병합) 대신 "소유자만 수정, 나머지는 읽기 전용"으로
+# 간단히 막기로 함(사용자 결정). can_view는 "목록에 보이는가"(공유/부서/공통 전부
+# 포함)이고, can_edit은 그중에서도 "고칠 수 있는가"(소유자 또는 관리자만)로 완전히
+# 별개 기준이다 — main.py의 PATCH/DELETE 라우트가 can_view 통과 후 이것도 확인한다.
+def can_edit(project: dict[str, Any], viewer_email: str | None, is_admin: bool) -> bool:
+    if is_admin:
+        return True
+    return viewer_email is not None and project.get("ownerEmail") == viewer_email
+
+
 def get_project(project_id: str) -> dict[str, Any] | None:
     p = _read_project(project_id)
     return _to_detail(p) if p else None

@@ -9,10 +9,11 @@ interface Props {
   initialCells?:  Cell[]                      // 프로젝트 전환 시 저장된 셀 복원
   onCellsChange?: (cells: Cell[]) => void      // 자동저장(디바운스)용
   showToast:      (msg: string) => void
+  readOnly?:      boolean   // 내 소유가 아닌 공유/부서 프로젝트 — 질문 추가·실행·삭제 다 막는다
 }
 
 const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
-  { sessionId, initialCells, onCellsChange, showToast },
+  { sessionId, initialCells, onCellsChange, showToast, readOnly = false },
   ref
 ) {
   const [cells, setCells] = useState<Cell[]>(() => initialCells ?? [])
@@ -35,10 +36,11 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
   }, [cells])
 
   const addCell = useCallback((text = ''): number => {
+    if (readOnly) return -1   // Header의 "＋ 셀 추가"도 여기로 오므로 방어적으로 한 번 더 막는다
     const id = ++cellCounterRef.current
     setCells(prev => [...prev, { id, type: 'ai', text, output: null }])
     return id
-  }, [])
+  }, [readOnly])
 
   const deleteCell = useCallback((id: number) => {
     setCells(prev => prev.filter(c => c.id !== id))
@@ -161,11 +163,16 @@ const NotebookView = forwardRef<NotebookHandle, Props>(function NotebookView(
               onDelete={() => deleteCell(cell.id)}
               onTextChange={(text) => updateText(cell.id, text)}
               onExport={() => handleExport(cell.id)}
+              readOnly={readOnly}
             />
           ))}
-          <div className="add-bar">
-            <button className="btn" onClick={() => addCell()}>＋ 셀 추가</button>
-          </div>
+          {readOnly ? (
+            <div className="nb-readonly-note">🔒 읽기 전용 — 이 프로젝트는 소유자만 수정할 수 있습니다</div>
+          ) : (
+            <div className="add-bar">
+              <button className="btn" onClick={() => addCell()}>＋ 셀 추가</button>
+            </div>
+          )}
         </div>
       </div>
     </div>

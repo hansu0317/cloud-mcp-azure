@@ -17,6 +17,10 @@ interface Props {
   onDeleteProject: (id: string) => void
   onSelectTables:  (projectId: string, tables: string[]) => void   // 프로젝트별 테이블 스코프 변경
   onReorderProjects: (orderedIds: string[]) => void                // ▲▼로 만든 새 전체 순서
+  // 2026-08-25: 공유/부서 프로젝트는 소유자만 수정 가능 — 나머지는 읽기 전용
+  // (App.tsx의 canEditProject 참고, 실제 방어선은 서버). 순서 바꾸기(▲▼·드래그)는
+  // 그냥 내 화면 정렬 취향에 가까워서 예외로 누구나 허용한다.
+  canEditProject:  (p: ProjectSummary) => boolean
 }
 
 // 프로젝트 목록 — 테이블 스코프는 목록에 항상 펼쳐 두지 않고, Databricks Genie의
@@ -25,6 +29,7 @@ interface Props {
 export default function Sidebar({
   collapsed, projects, activeProjectId,
   onSwitchProject, onCreateProject, onRenameProject, onDeleteProject, onSelectTables, onReorderProjects,
+  canEditProject,
 }: Props) {
   const [catalog,     setCatalog]     = useState<CatalogGroup[]>([])
   const [refreshing,  setRefreshing]  = useState(false)
@@ -216,6 +221,7 @@ export default function Sidebar({
 
           {visibleProjects.map(p => {
             const fullIndex = projects.findIndex(pr => pr.id === p.id)
+            const editable  = canEditProject(p)
             return (
             <div
               className={`proj-row${p.id === activeProjectId ? ' active' : ''}${dragOverId === p.id ? ' drag-over' : ''}`}
@@ -242,13 +248,20 @@ export default function Sidebar({
                   <span className="proj-icon">📁</span>
                   <span className="proj-name">{p.name}</span>
                   {p.visibility === 'private' && <span className="proj-private-badge" title="나만 볼 수 있는 프로젝트">🔒</span>}
-                  <button
-                    className="proj-table-badge clickable"
-                    title={p.tables.length > 0 ? '테이블 선택 열기' : '테이블 미선택 — 등록된 전체 테이블 조회 가능. 클릭해서 범위 지정'}
-                    onClick={e => { e.stopPropagation(); setEditingProject(p) }}
-                  >
-                    {p.tables.length}개
-                  </button>
+                  {/* 2026-08-25: 소유자가 아니면 읽기 전용 — 다른 부서원이 동시에 고쳐서
+                      서로 덮어쓰는 걸 막으려고 "실시간 동시편집" 대신 이 쪽으로 갔다. */}
+                  {!editable && <span className="proj-readonly-badge" title="읽기 전용 — 소유자만 수정할 수 있습니다">👁</span>}
+                  {editable ? (
+                    <button
+                      className="proj-table-badge clickable"
+                      title={p.tables.length > 0 ? '테이블 선택 열기' : '테이블 미선택 — 등록된 전체 테이블 조회 가능. 클릭해서 범위 지정'}
+                      onClick={e => { e.stopPropagation(); setEditingProject(p) }}
+                    >
+                      {p.tables.length}개
+                    </button>
+                  ) : (
+                    <span className="proj-table-badge" title="테이블 스코프(읽기 전용)">{p.tables.length}개</span>
+                  )}
                 </div>
               )}
               <div className="proj-acts">
@@ -268,9 +281,13 @@ export default function Sidebar({
                     </button>
                   </>
                 )}
-                <button className="btn-xs proj-act-btn" title="테이블 추가/변경" onClick={() => setEditingProject(p)}>＋</button>
-                <button className="btn-xs proj-act-btn" title="이름 변경" onClick={() => startRename(p)}>✎</button>
-                <button className="btn-xs proj-act-btn danger" title="삭제" onClick={() => handleDelete(p)}>🗑</button>
+                {editable && (
+                  <>
+                    <button className="btn-xs proj-act-btn" title="테이블 추가/변경" onClick={() => setEditingProject(p)}>＋</button>
+                    <button className="btn-xs proj-act-btn" title="이름 변경" onClick={() => startRename(p)}>✎</button>
+                    <button className="btn-xs proj-act-btn danger" title="삭제" onClick={() => handleDelete(p)}>🗑</button>
+                  </>
+                )}
               </div>
             </div>
             )

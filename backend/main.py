@@ -30,6 +30,7 @@ if sys.version_info < (3, 11):
     raise RuntimeError("crm-ai-chat FastAPI 백엔드는 Python 3.11 이상이 필요합니다.")
 
 from .auth import get_session, is_configured as auth_is_configured, register_auth_routes
+from .auth import users as auth_users
 from .chat_api import api_status, cleanup_loop, provider_health, provider_status, register_chat_api
 from . import dataverse
 from .store import projects
@@ -490,6 +491,56 @@ def _viewer_context(request: Request) -> tuple[str | None, str | None, bool]:
     return session["email"], session.get("department"), session["isAdmin"]
 
 
+# ─── API: 관리자 — 누가 관리자/어느 부서인지 (data/users.json) ───────────────────
+# 2026-08-25: 처음엔 .env의 ADMIN_EMAILS/DEPARTMENT_MAP이었는데 "서버 파일을 직접
+# 고쳐야 하고 재시작까지 해야 한다"는 피드백으로 화면에서 바로 추가/수정/삭제할 수
+# 있는 이 API로 옮겼다(backend/auth/users.py 참고). 로그인 자체가 꺼진 환경에선
+# _viewer_context와 같은 기준으로 그냥 통과시킨다(관리자 개념이 없는 환경이므로).
+def _require_admin(request: Request) -> str | None:
+    if not auth_is_configured():
+        return None
+    session = get_session(request)
+    if session is None or not session["isAdmin"]:
+        return "관리자만 사용할 수 있습니다."
+    return None
+
+
+@app.get("/api/admin/users")
+async def list_admin_users_route(request: Request):
+    reason = _require_admin(request)
+    if reason:
+        return JSONResponse({"error": reason}, status_code=HttpStatus.FORBIDDEN)
+    return {"users": auth_users.list_users()}
+
+
+@app.post("/api/admin/users")
+async def upsert_admin_user_route(request: Request):
+    reason = _require_admin(request)
+    if reason:
+        return JSONResponse({"error": reason}, status_code=HttpStatus.FORBIDDEN)
+    body = await request.json()
+    if not isinstance(body, dict) or not isinstance(body.get("email"), str) or not body["email"].strip():
+        return JSONResponse({"error": "email이 필요합니다."}, status_code=HttpStatus.BAD_REQUEST)
+    department = body.get("department")
+    if department is not None and not isinstance(department, str):
+        return JSONResponse({"error": "department는 문자열이거나 없어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
+    try:
+        entry = auth_users.upsert_user(body["email"], department, bool(body.get("isAdmin", False)))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=HttpStatus.BAD_REQUEST)
+    return entry
+
+
+@app.delete("/api/admin/users/{email}")
+async def delete_admin_user_route(request: Request, email: str):
+    reason = _require_admin(request)
+    if reason:
+        return JSONResponse({"error": reason}, status_code=HttpStatus.FORBIDDEN)
+    if not auth_users.remove_user(email):
+        return JSONResponse({"error": "해당 이메일을 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
+    return {"ok": True}
+
+
 @app.get("/api/projects")
 async def list_projects_route(request: Request):
     email, department, is_admin = _viewer_context(request)
@@ -605,6 +656,10 @@ async def update_project_route(project_id: str, request: Request):
     email, department, is_admin = _viewer_context(request)
     if existing is None or not projects.can_view(existing, email, department, is_admin):
         return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
+    # 볼 수는 있어도(부서 공유) 소유자가 아니면 수정은 못 한다 — 동시편집 충돌 방지
+    # (2026-08-25, projects.py의 can_edit 주석 참고).
+    if not projects.can_edit(existing, email, is_admin):
+        return JSONResponse({"error": "이 프로젝트는 읽기 전용입니다 — 소유자만 수정할 수 있습니다."}, status_code=HttpStatus.FORBIDDEN)
     updated = projects.update_project(
         project_id, name=body.get("name"), tables=body.get("tables"),
         instructions=body.get("instructions"), cells=body.get("cells"),
@@ -620,6 +675,8 @@ async def delete_project_route(project_id: str, request: Request):
     email, department, is_admin = _viewer_context(request)
     if existing is None or not projects.can_view(existing, email, department, is_admin):
         return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
+    if not projects.can_edit(existing, email, is_admin):
+        return JSONResponse({"error": "이 프로젝트는 읽기 전용입니다 — 소유자만 삭제할 수 있습니다."}, status_code=HttpStatus.FORBIDDEN)
     ok = projects.delete_project(project_id)
     if not ok:
         return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)

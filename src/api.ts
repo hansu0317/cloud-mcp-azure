@@ -111,6 +111,46 @@ export async function getMe(): Promise<AuthMe> {
 // 쪽 주석 참고. fetch가 아니라 브라우저가 실제로 이동해야 하는 흐름이라 여기 별도
 // 함수는 없다(window.location.href로 직접 이동).
 
+// ─── 관리자: 사용자(부서·관리자 여부) 관리 — 2026-08-25 ────────────────────────────
+// data/users.json을 화면에서 직접 고칠 수 있게 한 CRUD. 서버가 관리자 세션인지
+// 매 요청마다 다시 확인하므로(main.py의 _require_admin) 프론트는 그냥 호출만 한다.
+export interface AdminUser {
+  email:    string
+  department: string | null
+  isAdmin:  boolean
+}
+
+export async function listAdminUsers(): Promise<AdminUser[]> {
+  const resp = await fetch('/api/admin/users')
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => null) as { error?: string } | null
+    throw new Error(body?.error || `사용자 목록 조회 실패 (HTTP ${resp.status})`)
+  }
+  const { users } = await resp.json() as { users: AdminUser[] }
+  return users
+}
+
+export async function upsertAdminUser(user: AdminUser): Promise<AdminUser> {
+  const resp = await fetch('/api/admin/users', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(user),
+  })
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => null) as { error?: string } | null
+    throw new Error(body?.error || `저장 실패 (HTTP ${resp.status})`)
+  }
+  return resp.json() as Promise<AdminUser>
+}
+
+export async function deleteAdminUser(email: string): Promise<void> {
+  const resp = await fetch(`/api/admin/users/${encodeURIComponent(email)}`, { method: 'DELETE' })
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => null) as { error?: string } | null
+    throw new Error(body?.error || `삭제 실패 (HTTP ${resp.status})`)
+  }
+}
+
 // ─── 지침 (조인 관계·용어·예시) — 2026-08-12부터 프로젝트별로 분리, updateProject로 저장 ──
 // (예전엔 전역 POST /api/instructions 하나였음 — 프로젝트마다 다른 few-shot이 서로
 // 섞여 들어가는 문제가 있어 폐기. InstructionsPanel은 activeProject.instructions를

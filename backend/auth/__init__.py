@@ -27,7 +27,7 @@ import msal
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from .departments import get_department
+from . import users
 from ..core.logger import log
 from ..core.sse import HttpStatus
 
@@ -38,9 +38,6 @@ LOGIN_CLIENT_SECRET = os.environ.get("LOGIN_CLIENT_SECRET", "").strip()
 # 결정) — 실제 https 뒤에 배포하면 .env에서 COOKIE_SECURE=true로 반드시 켜야 한다
 # (안 켜면 쿠키가 암호화 안 된 채로 오갈 수 있음).
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes"}
-_ADMIN_EMAILS = {
-    e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()
-}
 
 COOKIE_NAME = "crm_session"
 SESSION_TTL_SECONDS = 8 * 60 * 60          # 근무시간 기준 8시간
@@ -140,11 +137,11 @@ def register_auth_routes(app: Any) -> None:
         _sessions[session_id] = {
             "email": email,
             "name": name,
-            "isAdmin": email.lower() in _ADMIN_EMAILS,
-            "department": get_department(email),
+            "isAdmin": users.is_admin(email),
+            "department": users.get_department(email),
             "expiresAt": now + SESSION_TTL_SECONDS,
         }
-        log.info("AUTH", f"로그인 성공: {name} ({email}), 부서: {get_department(email) or '(미지정)'}", {})
+        log.info("AUTH", f"로그인 성공: {name} ({email}), 부서: {users.get_department(email) or '(미지정)'}", {})
         response = RedirectResponse("/")
         response.set_cookie(
             COOKIE_NAME, session_id, max_age=SESSION_TTL_SECONDS,
@@ -190,8 +187,8 @@ def register_auth_routes(app: Any) -> None:
             _sessions[session_id] = {
                 "email": email,
                 "name": f"(데모) {email}",
-                "isAdmin": email.lower() in _ADMIN_EMAILS,
-                "department": get_department(email),
+                "isAdmin": users.is_admin(email),
+                "department": users.get_department(email),
                 "expiresAt": now + SESSION_TTL_SECONDS,
             }
             response = JSONResponse({"ok": True})
