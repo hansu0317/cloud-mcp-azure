@@ -29,12 +29,14 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 if sys.version_info < (3, 11):
     raise RuntimeError("crm-ai-chat FastAPI 백엔드는 Python 3.11 이상이 필요합니다.")
 
+from .auth import get_session, is_configured as auth_is_configured, register_auth_routes
 from .chat_api import api_status, cleanup_loop, provider_health, provider_status, register_chat_api
 from . import dataverse, projects
 from .dataverse import dataverse_env_missing, fetch_entity_schema
 from .logger import get_active_log_file_path, log, read_json_log_tail
 from .provider_factory import close_llm_provider
 from .sse import HttpStatus
+from .usage import usage_summary
 
 # ─── 환경변수 ─────────────────────────────────────────────────────────────────
 PORT = int(os.environ.get("PORT", "3000"))
@@ -322,13 +324,34 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+# ─── 미들웨어: Microsoft 로그인 (LOGIN_* 설정 시 /api/* 전체에 적용) ──────────────
+# 2026-08-25 — "여러 사람이 쓰는 웹페이지가 되려면 로그인이 있어야 한다"는 피드백.
+# ApiKeyMiddleware와 같은 패턴(설정 안 돼 있으면 그냥 통과) — LOGIN_*이 .env에 없는
+# 환경(로컬 개발 클론 등)에서 실수로 접근 자체가 막히는 걸 피한다. 실제 배포(지금 이
+# 환경 포함)는 .env에 LOGIN_*을 채웠으므로 강제된다. 정적 파일(SPA 번들)과 /auth/*는
+# 이 미들웨어가 아예 안 보는 경로라 로그인 화면 자체는 로그인 없이도 항상 뜬다.
+class LoginSessionMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        # /api/health는 예외 — 모니터링·헬스체크 스크립트가 로그인 없이도 살아있는지
+        # 확인할 수 있어야 한다(민감 정보 없음, 이미 그 목적으로 만들어진 엔드포인트).
+        if auth_is_configured() and path.startswith("/api") and path != "/api/health":
+            if get_session(request) is None:
+                return JSONResponse({"error": "로그인이 필요합니다."}, status_code=HttpStatus.UNAUTHORIZED)
+        return await call_next(request)
+
+
 # add_middleware로 추가한 순서의 역순으로 바깥에서 안으로 감싸므로, 나중에 추가한
-# ApiKeyMiddleware가 가장 바깥(먼저 실행)이 되어 인증 → rate-limit 순서가 된다.
+# LoginSessionMiddleware가 가장 바깥(먼저 실행)이 되어 로그인 → API 키 → rate-limit
+# 순서가 된다 — 로그인 안 된 요청은 rate-limit 버킷조차 소비하지 않고 바로 걸러진다.
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(JsonBodyGuardMiddleware)
 app.add_middleware(ApiKeyMiddleware)
+app.add_middleware(LoginSessionMiddleware)
 if API_KEY:
     log.info("SERVER", "API 키 인증 활성화됨")
+if auth_is_configured():
+    log.info("SERVER", "Microsoft 로그인 활성화됨")
 
 
 # ─── API: 스키마 갱신 ─────────────────────────────────────────────────────────
@@ -602,6 +625,14 @@ async def get_logs(n: int = 100):
     return list(reversed(read_json_log_tail(n, path=get_active_log_file_path())))
 
 
+# ─── API: 토큰 사용량·예상 비용 (2026-08-24 — "비용 가시성이 없다" 피드백) ──────────
+# 오늘/전체 누적 + (projectId를 주면) 그 프로젝트 것도 같이. backend/usage.py 참고 —
+# data/usage.jsonl에 chat_api.py가 질문마다 쌓아둔 걸 매 호출마다 읽어 합산한다.
+@app.get("/api/usage")
+async def get_usage(projectId: str | None = None):
+    return usage_summary(projectId)
+
+
 # ─── API: 헬스체크 (모니터링·기동 확인용) ────────────────────────────────────
 # curl http://localhost:3000/api/health 한 줄로 가용 상태를 확인한다.
 @app.get("/api/health")
@@ -627,6 +658,9 @@ async def health():
 
 # ─── 채팅 엔드포인트 (선택 LLM provider + Dataverse Web API) ──────────────────
 register_chat_api(app)
+
+# ─── 로그인 (Microsoft Entra ID) ─────────────────────────────────────────────
+register_auth_routes(app)
 
 
 # 등록되지 않은 API를 SPA index.html로 숨기지 않고 일관된 JSON 404로 반환한다.

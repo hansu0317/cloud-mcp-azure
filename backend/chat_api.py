@@ -43,6 +43,7 @@ from .projects import (
 from .provider_factory import get_llm_provider
 from .semaphore import Semaphore
 from .sse import HttpStatus, SSE_HEADERS, SseChannel
+from .usage import record_usage
 
 
 def _positive_int(raw: str | None, fallback: int) -> int:
@@ -877,6 +878,19 @@ def register_chat_api(app: Any) -> None:
                         "successfulDataverseQueries": successful_dataverse_queries,
                     },
                 )
+                # 위 로그는 logs/server.*.log에만 남아 화면 어디서도 안 보인다는
+                # 피드백(2026-08-24) — data/usage.jsonl에도 같은 수치를 남겨서
+                # /api/usage로 집계해 화면(💰 사용량)에 보여준다. 비용 추정 실패가
+                # 실제 답변 전달을 막으면 안 되므로 별도로 감싼다.
+                try:
+                    await record_usage(
+                        project_id=session_id, provider=provider.kind, model=provider.model,
+                        input_tokens=input_tokens, output_tokens=output_tokens,
+                        cache_read_tokens=cache_read_tokens, cache_write_tokens=cache_write_tokens,
+                        elapsed_s=elapsed, query_count=query_count,
+                    )
+                except Exception as usage_exc:
+                    log.error("API-사용량", f"사용량 기록 실패: {usage_exc}", log_context)
                 channel.send({"type": "done"})
             except asyncio.CancelledError:
                 session.messages = rollback_messages
