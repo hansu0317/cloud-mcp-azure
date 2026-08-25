@@ -23,8 +23,13 @@ defineview/
 # MCP 설정 (OAuth clientId 포함)
 .mcp.json
 
-# 스키마·데이터 캐시 (자동 생성 or 민감 정보)
-data/
+# 스키마·데이터 캐시 (자동 생성 or 민감 정보) — data/examples/만 예외로 커밋한다
+# (2026-08-25: 저장소가 Public이라 실제 회사 데이터·직원 이메일은 절대 못 올리고,
+# 대신 가짜 이메일·빈 프로젝트로 만든 데모용 시드 데이터만 올려서 다른 환경에서
+# git clone만으로도 부서별 접근 제어를 바로 테스트해볼 수 있게 한다 — 실제 데이터로
+# 덮어쓰지 않게 data/users.json이 아니라 별도 경로에 둠. 사용법은 data/examples/README.md).
+data/*
+!data/examples/
 
 # 로그
 *.log

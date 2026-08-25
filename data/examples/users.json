@@ -1,0 +1,17 @@
+[
+  {
+    "email": "admin@example.com",
+    "department": null,
+    "isAdmin": true
+  },
+  {
+    "email": "sales@example.com",
+    "department": "영업",
+    "isAdmin": false
+  },
+  {
+    "email": "dev@example.com",
+    "department": "개발",
+    "isAdmin": false
+  }
+]
