@@ -45,6 +45,10 @@ from ..core.logger import log
 PROJECTS_DIR = Path.cwd() / "data" / "projects"
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
+# update_project()의 department 파라미터용 "안 건드림" sentinel — None(=공통으로
+# 바꿈)과 구분해야 해서 기본값으로 못 쓴다.
+UNSET = object()
+
 # 2026-08-12 이전까지 전체 프로젝트가 공유하던 지침 파일 — 마이그레이션 원본으로만 쓴다.
 _LEGACY_GLOBAL_INST_FILE = Path.cwd() / "data" / "instructions.json"
 _EMPTY_INSTRUCTIONS: dict[str, Any] = {"joins": [], "terms": [], "examples": []}
@@ -310,7 +314,12 @@ def create_project(
 def update_project(
     project_id: str, *, name: str | None = None, tables: list[str] | None = None,
     instructions: dict[str, Any] | None = None, cells: list[Any] | None = None,
+    department: str | None | Any = UNSET, visibility: str | None = None,
 ) -> dict[str, Any] | None:
+    """department는 세 값을 구분해야 해서 sentinel(UNSET)을 쓴다 — "안 바꿈"(UNSET,
+    기본값) vs "공통으로 바꿈"(None) vs "이 부서로 바꿈"(문자열)이 전부 다른 뜻이라
+    None을 "안 바꿈" 기본값으로 못 쓴다(2026-08-25, 관리자가 프로젝트 공개범위를
+    나중에 바꿀 수 있게 하면서 추가 — main.py의 admin 전용 가드 참고)."""
     p = _read_project(project_id)
     if p is None:
         return None
@@ -322,6 +331,10 @@ def update_project(
         p["instructions"] = _copy_instructions(instructions)
     if cells is not None:
         p["cells"] = deepcopy(cells)
+    if department is not UNSET:
+        p["department"] = department
+    if visibility is not None:
+        p["visibility"] = visibility if visibility in ("shared", "private") else p.get("visibility", "shared")
     p["updatedAt"] = _now_iso()
     _write_project(p)
     return _to_detail(p)

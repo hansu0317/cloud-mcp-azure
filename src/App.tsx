@@ -175,6 +175,16 @@ export default function App() {
     updateProject(projectId, { tables }).catch(() => showToast('테이블 선택 저장 실패 — 새로고침 후 다시 시도해주세요'))
   }, [showToast])
 
+  // 관리자 전용 — 프로젝트의 부서/공개범위를 바꾼다("개인 프로젝트를 만든 뒤
+  // 관리자에게 요청해서 부서나 전사 공통으로 넓혀달라"는 흐름, 2026-08-25).
+  // 서버가 관리자 여부를 다시 확인하므로(main.py) 여기 authUser.isAdmin은 화면
+  // 표시용일 뿐 실제 방어선이 아니다.
+  const handleChangeAccess = useCallback((projectId: string, patch: { department?: string | null; visibility?: 'shared' | 'private' }) => {
+    setProjectList(prev => prev.map(p => (p.id === projectId ? { ...p, ...patch } : p)))
+    setActiveProject(prev => (prev && prev.id === projectId ? { ...prev, ...patch } : prev))
+    updateProject(projectId, patch).catch(() => showToast('부서·공개범위 변경 실패 — 새로고침 후 다시 시도해주세요'))
+  }, [showToast])
+
   // 사이드바 ▲▼ 버튼 — 화면에 이미 보이는(검색으로 걸러졌을 수도 있는) 목록 기준으로
   // 두 항목의 위치를 바꾼 새 전체 순서를 만들어 즉시 화면에 반영하고, 서버에도 그
   // 순서 그대로 저장한다(reorderProjects). 실패해도 다음 목록 새로고침에서 서버
@@ -245,6 +255,8 @@ export default function App() {
           onSelectTables={handleSelectTables}
           onReorderProjects={handleReorderProjects}
           canEditProject={canEditProject}
+          isAdmin={!!authUser?.isAdmin}
+          onChangeAccess={handleChangeAccess}
         />
         {activeProject && (
           <NotebookView

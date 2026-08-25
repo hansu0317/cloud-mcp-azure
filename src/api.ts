@@ -70,7 +70,12 @@ export async function getProject(id: string): Promise<ProjectDetail | null> {
 // 실제로 실패를 알고 사용자에게 보여줄 수 있게 한다.
 export async function updateProject(
   id: string,
-  patch: { name?: string; tables?: string[]; instructions?: Instructions; cells?: unknown[] },
+  patch: {
+    name?: string; tables?: string[]; instructions?: Instructions; cells?: unknown[]
+    // department/visibility는 관리자만 바꿀 수 있다(서버가 강제) — 개인 프로젝트를
+    // 만든 뒤 관리자에게 요청해서 부서/공통으로 넓히는 흐름(2026-08-25).
+    department?: string | null; visibility?: 'shared' | 'private'
+  },
 ): Promise<void> {
   const resp = await fetch(`${API.PROJECTS}/${id}`, {
     method:  'PATCH',
