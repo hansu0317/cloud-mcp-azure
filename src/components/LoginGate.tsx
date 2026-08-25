@@ -12,11 +12,14 @@ import { APP_NAME } from '../constants'
 // 세션이 있으면 이 카드는 사실상 안 보이고 바로 앱으로 넘어간다(SSO 통과가 그만큼
 // 빠르게 끝나서). 세션이 없는 사람만 실제 Microsoft 로그인 화면을 보게 된다 —
 // 그건 이 앱이 대신할 수 없는 지점이라 여기서 없앨 방법은 없다.
-// 로그인 자체가 실패해서 돌아온 경우(loginError=1)만 자동 재시도 루프를 막기 위해
-// 카드를 보여주고 수동으로 다시 누르게 한다.
+// 로그인 자체가 실패해서 돌아온 경우(loginError=1)나 등록 안 된 계정이라 거부된
+// 경우(loginError=denied)만 자동 재시도 루프를 막기 위해 카드를 보여주고 수동으로
+// 다시 누르게 한다.
 export default function LoginGate() {
   const params = new URLSearchParams(window.location.search)
-  const hadError = params.get('loginError') === '1'
+  const loginError = params.get('loginError')
+  const denied = loginError === 'denied'
+  const hadError = denied || loginError === '1'
 
   useEffect(() => {
     if (!hadError) window.location.href = '/auth/login'
@@ -32,7 +35,11 @@ export default function LoginGate() {
           <span className="logo-text">{APP_NAME}</span>
         </div>
         <div className="login-gate-sub">사내 계정으로 로그인해야 사용할 수 있습니다</div>
-        <div className="login-gate-error">로그인에 실패했습니다 — 다시 시도해주세요</div>
+        <div className="login-gate-error">
+          {denied
+            ? '이 계정은 등록되어 있지 않습니다 — 관리자에게 등록을 요청해주세요'
+            : '로그인에 실패했습니다 — 다시 시도해주세요'}
+        </div>
         <button type="button" className="btn primary login-gate-btn" onClick={() => { window.location.href = '/auth/login' }}>
           <svg className="ms-logo" width="18" height="18" viewBox="0 0 21 21" aria-hidden="true">
             <rect x="1"  y="1"  width="9" height="9" fill="#F25022" />
@@ -42,6 +49,18 @@ export default function LoginGate() {
           </svg>
           Microsoft 계정으로 로그인
         </button>
+        {/* 거부된 경우엔 브라우저에 이미 그 계정의 MS 세션이 있어서 위 버튼을 눌러도
+            같은(등록 안 된) 계정으로 조용히 SSO 통과되고 다시 거부되는 루프에 빠지기
+            쉽다 — 이땐 로그인 자체가 안 된 상태라 헤더의 "계정 전환"에 닿을 방법이
+            없으므로, 계정 선택을 강제하는 경로를 여기서 따로 열어준다. */}
+        {denied && (
+          <button
+            type="button" className="btn btn-sm login-gate-switch"
+            onClick={() => { window.location.href = '/auth/switch-account' }}
+          >
+            다른 계정으로 로그인
+          </button>
+        )}
       </div>
     </div>
   )

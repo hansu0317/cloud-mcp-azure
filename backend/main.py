@@ -651,30 +651,20 @@ async def update_project_route(project_id: str, request: Request):
         table_error = _validate_project_tables(body["tables"])
         if table_error:
             return JSONResponse({"error": table_error}, status_code=HttpStatus.BAD_REQUEST)
-    if "department" in body and body["department"] is not None and not isinstance(body["department"], str):
-        return JSONResponse({"error": "department는 문자열이거나 없어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
-    if "visibility" in body and body["visibility"] not in ("shared", "private"):
-        return JSONResponse({"error": "visibility는 'shared' 또는 'private'이어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
     # 목록에 안 보이는(=권한 없는) 프로젝트를 ID만으로 수정 못 하게 먼저 확인한다.
     existing = projects.get_project(project_id)
     email, department, is_admin = _viewer_context(request)
     if existing is None or not projects.can_view(existing, email, department, is_admin):
         return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
     # 볼 수는 있어도(부서 공유) 소유자가 아니면 수정은 못 한다 — 동시편집 충돌 방지
-    # (2026-08-25, projects.py의 can_edit 주석 참고).
+    # (2026-08-25, projects.py의 can_edit 주석 참고). department/visibility는 여기서
+    # 아예 안 받는다 — 만든 뒤엔 안 바뀐다(projects.py 상단 docstring, "개인 프로젝트를
+    # 나중에 공유로 넓힌다" 기능은 폐기됨).
     if not projects.can_edit(existing, email, is_admin):
         return JSONResponse({"error": "이 프로젝트는 읽기 전용입니다 — 소유자만 수정할 수 있습니다."}, status_code=HttpStatus.FORBIDDEN)
-    # 부서/공개범위(누가 볼 수 있는가) 변경은 소유자도 못 하고 관리자만 — "개인
-    # 프로젝트를 만든 뒤 관리자에게 요청해서 다른 사람도 볼 수 있게 넓힌다"는
-    # 흐름을 위해 추가(2026-08-25). 소유자가 스스로 넓히게 두면 동시편집 충돌
-    # 방지라는 애초 취지(본인만 건드리던 걸 남이 보게 됨)와 어긋난다.
-    if ("department" in body or "visibility" in body) and not is_admin:
-        return JSONResponse({"error": "부서·공개범위 변경은 관리자만 할 수 있습니다."}, status_code=HttpStatus.FORBIDDEN)
     updated = projects.update_project(
         project_id, name=body.get("name"), tables=body.get("tables"),
         instructions=body.get("instructions"), cells=body.get("cells"),
-        department=body.get("department") if "department" in body else projects.UNSET,
-        visibility=body.get("visibility"),
     )
     if updated is None:
         return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)

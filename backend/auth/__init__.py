@@ -133,6 +133,14 @@ def register_auth_routes(app: Any) -> None:
             log.error("AUTH", "id_token에 이메일/UPN이 없음", {})
             return RedirectResponse("/?loginError=1")
 
+        # 2026-08-25(임시): data/users.json에 없는 사람은 Microsoft 인증 자체는
+        # 성공해도 세션을 아예 안 만든다 — "등록 안 된 사람은 접근 자체를 막아라"는
+        # 요구. 지금은 소수만 시험 중이라 화이트리스트가 맞고, 인원이 늘면 이 게이트를
+        # 완화할 수도 있다(users.py의 is_known 주석 참고).
+        if not users.is_known(email):
+            log.error("AUTH", f"등록되지 않은 계정의 로그인 시도 차단: {email}", {})
+            return RedirectResponse("/?loginError=denied")
+
         session_id = secrets.token_urlsafe(32)
         _sessions[session_id] = {
             "email": email,
@@ -182,6 +190,10 @@ def register_auth_routes(app: Any) -> None:
             email = str((body or {}).get("email") or "").strip()
             if not email:
                 return JSONResponse({"error": "email이 필요합니다."}, status_code=HttpStatus.BAD_REQUEST)
+            # 실제 로그인(auth_callback)과 같은 기준을 적용 — 데모 경로라고 이 게이트를
+            # 건너뛰면 테스트가 실제 동작과 달라진다.
+            if not users.is_known(email):
+                return JSONResponse({"error": "등록되지 않은 계정입니다."}, status_code=HttpStatus.FORBIDDEN)
             now = time.time()
             session_id = secrets.token_urlsafe(32)
             _sessions[session_id] = {

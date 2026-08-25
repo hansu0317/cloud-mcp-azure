@@ -21,10 +21,6 @@ interface Props {
   // (App.tsx의 canEditProject 참고, 실제 방어선은 서버). 순서 바꾸기(▲▼·드래그)는
   // 그냥 내 화면 정렬 취향에 가까워서 예외로 누구나 허용한다.
   canEditProject:  (p: ProjectSummary) => boolean
-  // "개인 프로젝트를 만든 뒤 관리자에게 요청해서 부서/공통으로 넓힌다" 흐름
-  // (2026-08-25) — 관리자에게만 부서·공개범위 변경 버튼을 보여준다.
-  isAdmin:         boolean
-  onChangeAccess:  (projectId: string, patch: { department?: string | null; visibility?: 'shared' | 'private' }) => void
 }
 
 // 프로젝트 목록 — 테이블 스코프는 목록에 항상 펼쳐 두지 않고, Databricks Genie의
@@ -33,7 +29,7 @@ interface Props {
 export default function Sidebar({
   collapsed, projects, activeProjectId,
   onSwitchProject, onCreateProject, onRenameProject, onDeleteProject, onSelectTables, onReorderProjects,
-  canEditProject, isAdmin, onChangeAccess,
+  canEditProject,
 }: Props) {
   const [catalog,     setCatalog]     = useState<CatalogGroup[]>([])
   const [refreshing,  setRefreshing]  = useState(false)
@@ -47,9 +43,6 @@ export default function Sidebar({
   const [search,         setSearch]          = useState('')
   const [dragId,         setDragId]          = useState<string | null>(null)
   const [dragOverId,     setDragOverId]      = useState<string | null>(null)
-  // 관리자 전용 "부서/공개범위 변경" 인라인 편집 — 한 번에 한 행만 연다.
-  const [accessEditId,   setAccessEditId]    = useState<string | null>(null)
-  const [accessDeptVal,  setAccessDeptVal]   = useState('')
 
   const sbRef      = useRef<HTMLDivElement>(null)
   const resizerRef = useRef<HTMLDivElement>(null)
@@ -119,12 +112,6 @@ export default function Sidebar({
     const created = await onCreateProject(name, newPrivate ? 'private' : 'shared')
     setNewPrivate(false)
     setEditingProject(created)   // 만들자마자 테이블 선택 팝업으로 이어간다
-  }
-
-  const startAccessEdit = (p: ProjectSummary) => { setAccessEditId(p.id); setAccessDeptVal(p.department ?? '') }
-  const submitAccessDept = (p: ProjectSummary) => {
-    onChangeAccess(p.id, { department: accessDeptVal.trim() || null })
-    setAccessEditId(null)
   }
 
   const startRename = (p: ProjectSummary) => { setRenamingId(p.id); setRenameVal(p.name) }
@@ -220,11 +207,11 @@ export default function Sidebar({
             />
             <button className="btn btn-sm primary" onClick={submitCreate} disabled={!newName.trim()}>추가</button>
           </div>
-          {/* 2026-08-25: 기본은 소속 부서 전체가 볼 수 있는 프로젝트로 만들어진다 —
-              개인 작업만 하고 싶으면 체크. 개인 전용으로 만든 뒤 다른 사람도 보게
-              하려면 관리자에게 요청해서 부서/공통으로 바꿔달라고 하면 된다(관리자
-              화면의 🏷 버튼, 아래 행 렌더링 참고). */}
-          <label className="proj-new-private-toggle" title="체크하면 나만 볼 수 있는 개인 전용 프로젝트가 됩니다">
+          {/* 2026-08-25: 기본은 소속 부서 전체가 볼 수 있는 공유 프로젝트로 만들어진다 —
+              개인 작업만 하고 싶으면 체크. 개인 전용은 본인 폴더(data/users/<이메일>/
+              projects/)에 따로 저장되고 만든 뒤엔 공유로 못 바꾼다(projects.py 참고) —
+              공통 풀과 절대 안 섞이게 하기 위해 일부러 되돌릴 방법을 안 만들었다. */}
+          <label className="proj-new-private-toggle" title="체크하면 나만 볼 수 있는 개인 전용 프로젝트가 됩니다 — 나중에 공유로 바꿀 수 없습니다">
             <input type="checkbox" checked={newPrivate} onChange={e => setNewPrivate(e.target.checked)} />
             🔒 개인 전용으로 만들기
           </label>
@@ -311,38 +298,7 @@ export default function Sidebar({
                     <button className="btn-xs proj-act-btn danger" title="삭제" onClick={() => handleDelete(p)}>🗑</button>
                   </>
                 )}
-                {/* 2026-08-25: 부서/공개범위 변경은 소유자가 아니라 관리자 전용이다 —
-                    "개인 프로젝트를 만든 뒤 관리자에게 요청해서 넓힌다" 흐름이라
-                    소유 여부(editable)와 무관하게 관리자에게만 보인다. */}
-                {isAdmin && (
-                  <button
-                    className="btn-xs proj-act-btn" title="부서·공개범위 변경(관리자)"
-                    onClick={() => (accessEditId === p.id ? setAccessEditId(null) : startAccessEdit(p))}
-                  >
-                    🏷
-                  </button>
-                )}
               </div>
-              {accessEditId === p.id && (
-                <div className="proj-access-edit" onClick={e => e.stopPropagation()}>
-                  <input
-                    placeholder="부서(비우면 공통)"
-                    value={accessDeptVal}
-                    autoFocus
-                    onChange={e => setAccessDeptVal(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') submitAccessDept(p); if (e.key === 'Escape') setAccessEditId(null) }}
-                  />
-                  <button className="btn-xs proj-act-btn primary" title="저장" onClick={() => submitAccessDept(p)}>✓</button>
-                  {p.visibility === 'private' && (
-                    <button
-                      className="btn-xs proj-act-btn" title="개인 전용 해제(부서/공통에서 볼 수 있게)"
-                      onClick={() => { onChangeAccess(p.id, { visibility: 'shared' }); setAccessEditId(null) }}
-                    >
-                      🔓 공유로 전환
-                    </button>
-                  )}
-                </div>
-              )}
             </div>
             )
           })}

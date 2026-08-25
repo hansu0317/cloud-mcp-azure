@@ -21,9 +21,11 @@ class FastApiContractTests(unittest.TestCase):
         self.root = Path.cwd() / "data" / ".python-tests" / str(uuid.uuid4())
         self.projects_dir = self.root / "data" / "projects"
         self.projects_dir.mkdir(parents=True)
+        self.users_root = self.root / "data" / "users"
 
         self._patches = [
             patch.object(projects, "PROJECTS_DIR", self.projects_dir),
+            patch.object(projects, "USERS_ROOT", self.users_root),
             patch.object(
                 projects,
                 "_LEGACY_GLOBAL_INST_FILE",

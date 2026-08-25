@@ -83,6 +83,20 @@ def list_users() -> list[dict[str, Any]]:
     return _read_users()
 
 
+# 2026-08-25(임시): data/users.json에 없는 사람은 부서 미상 정도가 아니라 로그인
+# 자체를 막는다 — auth/__init__.py의 auth_callback이 이걸로 세션 발급 전에 거른다.
+# "임시"인 이유: 지금은 회사 전체가 아니라 소수만 테스트 중이라 화이트리스트가
+# 맞지만, 나중에 인원이 늘면 이 게이트를 없애고(또는 완화하고) 부서 미상=빈 목록
+# 정도로만 유지할 수도 있음 — 그때 판단.
+def is_known(email: str) -> bool:
+    email = email.strip().lower()
+    # break-glass 관리자도 "알려진 사람"으로 쳐야 한다 — 안 그러면 data/users.json이
+    # 깨졌을 때 그 파일을 고치러 들어와야 할 사람조차 로그인을 못 하는 모순이 생긴다.
+    if email in _BREAK_GLASS_ADMINS:
+        return True
+    return any(u["email"] == email for u in _read_users())
+
+
 def get_department(email: str) -> str | None:
     email = email.strip().lower()
     for u in _read_users():
