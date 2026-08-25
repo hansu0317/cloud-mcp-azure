@@ -121,8 +121,9 @@ export default function App() {
   }, [authState])
 
   // 생성 직후 사이드바가 바로 테이블 선택 팝업을 띄울 수 있도록 만든 프로젝트를 반환한다.
-  const handleCreateProject = useCallback(async (name: string, visibility: 'shared' | 'private' = 'shared'): Promise<ProjectSummary> => {
-    const created = await createProject(name, [], visibility)
+  // visibility는 더 이상 여기서 안 고른다 — 서버가 관리자 여부로 정한다(2026-08-25).
+  const handleCreateProject = useCallback(async (name: string): Promise<ProjectSummary> => {
+    const created = await createProject(name, [])
     refreshProjectList()
     setActiveProject(created)
     localStorage.setItem(LAST_ACTIVE_KEY, created.id)

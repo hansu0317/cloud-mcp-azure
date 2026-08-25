@@ -47,13 +47,13 @@ export async function listProjects(): Promise<ProjectSummary[]> {
   return projects
 }
 
-export async function createProject(
-  name: string, tables: string[] = [], visibility: 'shared' | 'private' = 'shared',
-): Promise<ProjectDetail> {
+// visibility는 이제 서버가 관리자 여부로 정한다(관리자→공유, 일반 사용자→개인
+// 전용) — 클라이언트가 고를 수 없다(2026-08-25, main.py create_project_route 참고).
+export async function createProject(name: string, tables: string[] = []): Promise<ProjectDetail> {
   return fetch(API.PROJECTS, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ name, tables, visibility }),
+    body:    JSON.stringify({ name, tables }),
   }).then(r => r.json()) as Promise<ProjectDetail>
 }
 

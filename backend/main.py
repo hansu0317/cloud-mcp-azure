@@ -556,14 +556,17 @@ async def create_project_route(request: Request):
         return JSONResponse({"error": "name은 문자열이어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
     if "tables" in body and not _is_string_array(body["tables"]):
         return JSONResponse({"error": "tables는 문자열 배열이어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
-    visibility = body.get("visibility", "shared")
-    if visibility not in ("shared", "private"):
-        return JSONResponse({"error": "visibility는 'shared' 또는 'private'이어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
     tables = body.get("tables", [])
     table_error = _validate_project_tables(tables)
     if table_error:
         return JSONResponse({"error": table_error}, status_code=HttpStatus.BAD_REQUEST)
-    email, department, _is_admin = _viewer_context(request)
+    email, department, is_admin = _viewer_context(request)
+    # 2026-08-25: 공유(부서·공통) 프로젝트는 관리자만 만든다 — 일반 사용자가 만드는
+    # 프로젝트는 무조건 개인 전용이다(요청 body의 visibility는 무시). "관리자 계정
+    # 하나가 부서별 공용 프로젝트를 관리하고, 일반 사용자는 각자 개인 프로젝트만
+    # 만든다"는 모델이라 프론트에 선택 UI 자체가 없다 — 여기서도 클라이언트가
+    # 임의로 visibility=shared를 보내는 걸 막아 이중으로 강제한다.
+    visibility = "shared" if is_admin else "private"
     return projects.create_project(
         body.get("name", ""), tables, owner_email=email, department=department, visibility=visibility,
     )
