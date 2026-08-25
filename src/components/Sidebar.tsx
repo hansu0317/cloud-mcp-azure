@@ -12,7 +12,7 @@ interface Props {
   projects:        ProjectSummary[]
   activeProjectId: string | null
   onSwitchProject: (id: string) => void
-  onCreateProject: (name: string) => Promise<ProjectSummary>
+  onCreateProject: (name: string, department?: string | null) => Promise<ProjectSummary>
   onRenameProject: (id: string, name: string) => void
   onDeleteProject: (id: string) => void
   onSelectTables:  (projectId: string, tables: string[]) => void   // 프로젝트별 테이블 스코프 변경
@@ -21,6 +21,9 @@ interface Props {
   // (App.tsx의 canEditProject 참고, 실제 방어선은 서버). 순서 바꾸기(▲▼·드래그)는
   // 그냥 내 화면 정렬 취향에 가까워서 예외로 누구나 허용한다.
   canEditProject:  (p: ProjectSummary) => boolean
+  // 관리자만 생성 시점에 부서를 고를 수 있다(이후엔 안 바뀜) — 일반 사용자는 항상
+  // 개인 전용으로 만들어지므로 부서 입력칸 자체가 필요 없다.
+  isAdmin:         boolean
 }
 
 // 프로젝트 목록 — 테이블 스코프는 목록에 항상 펼쳐 두지 않고, Databricks Genie의
@@ -35,13 +38,14 @@ interface Props {
 export default function Sidebar({
   collapsed, projects, activeProjectId,
   onSwitchProject, onCreateProject, onRenameProject, onDeleteProject, onSelectTables, onReorderProjects,
-  canEditProject,
+  canEditProject, isAdmin,
 }: Props) {
   const [catalog,     setCatalog]     = useState<CatalogGroup[]>([])
   const [refreshing,  setRefreshing]  = useState(false)
   const [refreshMsg,  setRefreshMsg]  = useState<string | null>(null)
 
   const [newName,        setNewName]        = useState('')
+  const [newDept,        setNewDept]        = useState('')
   const [renamingId,     setRenamingId]      = useState<string | null>(null)
   const [renameVal,      setRenameVal]       = useState('')
   const [editingProject, setEditingProject]  = useState<ProjectSummary | null>(null)   // 테이블 선택 모달 대상
@@ -114,7 +118,8 @@ export default function Sidebar({
     const name = newName.trim()
     if (!name) return
     setNewName('')
-    const created = await onCreateProject(name)
+    const created = await onCreateProject(name, isAdmin ? (newDept.trim() || null) : undefined)
+    setNewDept('')
     setEditingProject(created)   // 만들자마자 테이블 선택 팝업으로 이어간다
   }
 
@@ -288,6 +293,19 @@ export default function Sidebar({
             />
             <button className="btn btn-sm primary" onClick={submitCreate} disabled={!newName.trim()}>추가</button>
           </div>
+          {/* 2026-08-25: 부서는 관리자가 "만들 때만" 정한다 — 이후엔 안 바뀐다. 일반
+              사용자는 어차피 개인 전용으로만 만들어져서 부서가 의미 없으니 안 보여준다. */}
+          {isAdmin && (
+            <div className="proj-new-row proj-new-dept-row">
+              <input
+                className="proj-new-input"
+                placeholder="부서(비우면 전사 공통)"
+                value={newDept}
+                onChange={e => setNewDept(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') submitCreate() }}
+              />
+            </div>
+          )}
           {projects.length > 3 && (
             <div className="proj-search-row">
               <input

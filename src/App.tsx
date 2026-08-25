@@ -122,8 +122,10 @@ export default function App() {
 
   // 생성 직후 사이드바가 바로 테이블 선택 팝업을 띄울 수 있도록 만든 프로젝트를 반환한다.
   // visibility는 더 이상 여기서 안 고른다 — 서버가 관리자 여부로 정한다(2026-08-25).
-  const handleCreateProject = useCallback(async (name: string): Promise<ProjectSummary> => {
-    const created = await createProject(name, [])
+  // department는 관리자가 공유 프로젝트를 만들 때만 의미 있고(생성 시점에만, 이후엔
+  // 안 바뀜) 일반 사용자가 보내도 서버가 무시한다.
+  const handleCreateProject = useCallback(async (name: string, department?: string | null): Promise<ProjectSummary> => {
+    const created = await createProject(name, [], department)
     refreshProjectList()
     setActiveProject(created)
     localStorage.setItem(LAST_ACTIVE_KEY, created.id)
@@ -246,6 +248,7 @@ export default function App() {
           onSelectTables={handleSelectTables}
           onReorderProjects={handleReorderProjects}
           canEditProject={canEditProject}
+          isAdmin={!authUser || authUser.isAdmin}
         />
         {activeProject && (
           <NotebookView

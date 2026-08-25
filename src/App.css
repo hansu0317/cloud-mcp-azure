@@ -81,6 +81,7 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 
 /* 프로젝트 목록 — 테이블 스코프는 목록에 펼쳐두지 않고 TableScopeModal 팝업에서 고른다 */
 .proj-new-row { display: flex; gap: 5px; padding: 6px 10px 10px; }
+.proj-new-dept-row { padding-top: 0; }
 .proj-search-row { padding: 0 10px 8px; }
 .proj-new-input { flex: 1; min-width: 0; padding: 5px 8px; font-size: 11.5px; background: #0d1120; border: 1px solid #1e2533; border-radius: 4px; color: #e2e8f0; font-family: inherit; }
 .proj-new-input:focus { outline: none; border-color: #6366f1; }

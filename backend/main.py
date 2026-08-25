@@ -556,17 +556,24 @@ async def create_project_route(request: Request):
         return JSONResponse({"error": "name은 문자열이어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
     if "tables" in body and not _is_string_array(body["tables"]):
         return JSONResponse({"error": "tables는 문자열 배열이어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
+    if "department" in body and body["department"] is not None and not isinstance(body["department"], str):
+        return JSONResponse({"error": "department는 문자열이거나 없어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
     tables = body.get("tables", [])
     table_error = _validate_project_tables(tables)
     if table_error:
         return JSONResponse({"error": table_error}, status_code=HttpStatus.BAD_REQUEST)
-    email, department, is_admin = _viewer_context(request)
+    email, _viewer_department, is_admin = _viewer_context(request)
     # 2026-08-25: 공유(부서·공통) 프로젝트는 관리자만 만든다 — 일반 사용자가 만드는
     # 프로젝트는 무조건 개인 전용이다(요청 body의 visibility는 무시). "관리자 계정
     # 하나가 부서별 공용 프로젝트를 관리하고, 일반 사용자는 각자 개인 프로젝트만
     # 만든다"는 모델이라 프론트에 선택 UI 자체가 없다 — 여기서도 클라이언트가
     # 임의로 visibility=shared를 보내는 걸 막아 이중으로 강제한다.
     visibility = "shared" if is_admin else "private"
+    # 부서는 "생성 시점에만" 정한다(이후엔 안 바뀜, projects.py 상단 docstring 참고) —
+    # 관리자만 고를 수 있고, 일반 사용자의 개인 프로젝트는 애초에 department가
+    # 의미 없다(private는 소유자만 보므로 _is_visible이 department를 안 봄).
+    raw_dept = body.get("department")
+    department = raw_dept.strip() if is_admin and isinstance(raw_dept, str) and raw_dept.strip() else None
     return projects.create_project(
         body.get("name", ""), tables, owner_email=email, department=department, visibility=visibility,
     )
