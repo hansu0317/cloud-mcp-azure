@@ -47,15 +47,11 @@ export async function listProjects(): Promise<ProjectSummary[]> {
   return projects
 }
 
-// visibility는 서버가 관리자 여부로 정한다(관리자→공유, 일반 사용자→개인 전용) —
-// 클라이언트가 고를 수 없다. department는 관리자가 공유 프로젝트를 만들 때만
-// 의미 있고(생성 시점에만 정해지고 이후엔 안 바뀜), 서버가 관리자가 아니면 이
-// 값을 그냥 무시한다(2026-08-25, main.py create_project_route 참고).
-export async function createProject(name: string, tables: string[] = [], department?: string | null): Promise<ProjectDetail> {
+export async function createProject(name: string, tables: string[] = []): Promise<ProjectDetail> {
   return fetch(API.PROJECTS, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ name, tables, department }),
+    body:    JSON.stringify({ name, tables }),
   }).then(r => r.json()) as Promise<ProjectDetail>
 }
 
@@ -113,12 +109,11 @@ export async function getMe(): Promise<AuthMe> {
 // 쪽 주석 참고. fetch가 아니라 브라우저가 실제로 이동해야 하는 흐름이라 여기 별도
 // 함수는 없다(window.location.href로 직접 이동).
 
-// ─── 관리자: 사용자(부서·관리자 여부) 관리 — 2026-08-25 ────────────────────────────
+// ─── 관리자: 로그인 허용 명단·관리자 여부 관리 — 2026-08-25 ────────────────────────
 // data/users.json을 화면에서 직접 고칠 수 있게 한 CRUD. 서버가 관리자 세션인지
 // 매 요청마다 다시 확인하므로(main.py의 _require_admin) 프론트는 그냥 호출만 한다.
 export interface AdminUser {
   email:    string
-  department: string | null
   isAdmin:  boolean
 }
 

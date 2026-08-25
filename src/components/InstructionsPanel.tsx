@@ -13,7 +13,6 @@ interface Props {
   cells:         Cell[]
   onSave:        (next: Instructions) => Promise<void>
   showToast:     (msg: string) => void
-  readOnly?:     boolean   // 내 소유가 아닌 공유/부서 프로젝트 — 추가·삭제·저장 다 막고 보기만
 }
 
 type Tab = 'joins' | 'terms' | 'examples'
@@ -196,7 +195,7 @@ function JoinRow({ join, fromLabel, toLabel, fromColLabel, onDelete }: {
 // 스스로 하는 게 아니라, App.tsx가 <InstructionsPanel key={activeProject.id} .../>로
 // 프로젝트 전환 시 강제로 새로 마운트시켜서다(NotebookView와 동일한 패턴) — 그래야
 // 아래 useState(instructions.*) 초기값이 새 프로젝트 것으로 다시 계산된다.
-export default function InstructionsPanel({ collapsed, projectId, projectName, projectTables, instructions, cells, onSave, showToast, readOnly = false }: Props) {
+export default function InstructionsPanel({ collapsed, projectId, projectName, projectTables, instructions, cells, onSave, showToast }: Props) {
   const [tab, setTab] = useState<Tab>('joins')
   const [joins,    setJoins]    = useState<JoinDef[]>(instructions.joins)
   const [terms,    setTerms]    = useState<TermDef[]>(instructions.terms)
@@ -458,14 +457,14 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
                 fromLabel={tableLabel(j.fromTable)}
                 toLabel={tableLabel(j.toTable)}
                 fromColLabel={columnLabel(j.fromTable, j.fromCol)}
-                onDelete={readOnly ? undefined : () => setJoins(prev => prev.filter((_, idx) => idx !== i))}
+                onDelete={() => setJoins(prev => prev.filter((_, idx) => idx !== i))}
               />
             ))}
 
             {/* 2) 관계를 찾았습니다 — SQL을 몰라도 눌러서 추가만 하면 되는 자동 후보라
                 등록된 목록과 확실히 구분되는 자기 섹션을 준다. 읽기 전용이면 추가할
                 방법이 없으니 후보 자체를 안 보여준다. */}
-            {!readOnly && joinCandidatesToShow.length > 0 && (
+            {joinCandidatesToShow.length > 0 && (
               <div className="instr-section">
                 <div className="instr-section-title">
                   🔎 관계를 찾았습니다
@@ -504,9 +503,7 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
                       ? <>✨ "{t.term}" <span className="instr-row-label">— 초안 후보, 테이블·컬럼·설명을 채워주세요</span></>
                       : <><b>{tableLabel(t.table)}</b>.{t.column} = "{t.term}" → {t.def}</>}
                   </span>
-                  {!readOnly && (
-                    <button className="instr-row-del" title="삭제" onClick={() => setTerms(prev => prev.filter((_, idx) => idx !== i))}>×</button>
-                  )}
+                  <button className="instr-row-del" title="삭제" onClick={() => setTerms(prev => prev.filter((_, idx) => idx !== i))}>×</button>
                 </div>
               )
             })}
@@ -536,7 +533,7 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
                       ? <div className="instr-row-label">✨ 초안 후보 — 노트북에서 직접 다시 물어보고, 실제 데이터를 확인한 답을 채워주세요</div>
                       : <div className="instr-example-answer"><b>A.</b> {ex.answer}</div>}
                   </div>
-                  {!readOnly && incomplete && (
+                  {incomplete && (
                     <button
                       className="instr-row-del"
                       title="아래 입력칸으로 옮겨서 답 채우기"
@@ -549,9 +546,7 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
                       ✎
                     </button>
                   )}
-                  {!readOnly && (
-                    <button className="instr-row-del" title="삭제" onClick={() => setExamples(prev => prev.filter((_, idx) => idx !== i))}>×</button>
-                  )}
+                  <button className="instr-row-del" title="삭제" onClick={() => setExamples(prev => prev.filter((_, idx) => idx !== i))}>×</button>
                 </div>
               )
             })}
@@ -567,7 +562,7 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
           드래그해서 만드는 다이어그램보다 훨씬 불편하다는 피드백(2026-08-24) — 같은
           일을 하는 두 가지 방법을 두는 대신, 자동 후보에 없는 연결은 전부 다이어그램
           하나로 통일한다. 목록 쪽엔 이제 "새로 만들기" 버튼 하나만 남는다. */}
-      {!readOnly && tab === 'joins' && projectTables.length > 0 && (
+      {tab === 'joins' && projectTables.length > 0 && (
         <div className="instr-add-pinned">
           <button
             type="button" className="instr-add-toggle"
@@ -579,7 +574,7 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
         </div>
       )}
 
-      {!readOnly && tab === 'terms' && projectTables.length > 0 && (
+      {tab === 'terms' && projectTables.length > 0 && (
         <div className="instr-add-pinned">
           <button type="button" className="instr-add-toggle" onClick={() => setTermAddOpen(o => !o)}>
             <span>➕ 컬럼에서 찾아 추가하기</span>
@@ -640,7 +635,7 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
         </div>
       )}
 
-      {!readOnly && tab === 'examples' && (
+      {tab === 'examples' && (
         <div className="instr-add-pinned">
           <button type="button" className="instr-add-toggle" onClick={() => setExampleAddOpen(o => !o)}>
             <span>➕ 새 예시 추가하기</span>
@@ -698,9 +693,7 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
       <div className="instr-panel-ftr">
         <span className="instr-total-count">{totalCount > 0 ? `총 ${totalCount}개 지침` : '등록된 지침 없음'}</span>
         <div className="h-spacer" />
-        {readOnly
-          ? <span className="instr-readonly-note">🔒 읽기 전용 — 소유자만 수정할 수 있습니다</span>
-          : <button className="btn primary" onClick={handleSave} disabled={saving}>{saving ? '저장 중…' : '저장'}</button>}
+        <button className="btn primary" onClick={handleSave} disabled={saving}>{saving ? '저장 중…' : '저장'}</button>
       </div>
 
       {diagramOpen && (

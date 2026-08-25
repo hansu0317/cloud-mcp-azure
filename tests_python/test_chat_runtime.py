@@ -213,7 +213,7 @@ class ChatRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.provider: Any = _ToolLoopProvider()
         self.saved_histories: list[list[dict[str, Any]]] = []
 
-        def save_history(_session_id: str, messages: list[dict[str, Any]]) -> bool:
+        def save_history(_email: str, _session_id: str, messages: list[dict[str, Any]]) -> bool:
             self.saved_histories.append(deepcopy(messages))
             return True
 
@@ -231,6 +231,11 @@ class ChatRuntimeTests(unittest.IsolatedAsyncioTestCase):
             patch.object(chat_api, "_provider", side_effect=lambda: self.provider),
             patch.object(chat_api, "dataverse_env_missing", return_value=None),
             patch.object(chat_api, "dataverse_get", self.dataverse_get),
+            # v1(2026-08-25): /api/chat이 이제 로그인한 사람의 이메일을 알아야 그
+            # 사람 폴더의 프로젝트를 찾는다 — 이 파일은 채팅 런타임(도구 루프·동시성)을
+            # 다루지 로그인을 다루지 않으므로, 실제 .env에 LOGIN_*이 켜져 있어도
+            # 고정 이메일로 항상 통과시킨다.
+            patch.object(chat_api, "viewer_email", return_value="test-user@example.com"),
             patch.object(chat_api, "project_exists", return_value=True),
             patch.object(chat_api, "get_project_tables", return_value=["account"]),
             patch.object(

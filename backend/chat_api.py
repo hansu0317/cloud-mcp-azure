@@ -20,6 +20,7 @@ from urllib.parse import unquote
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from .auth import viewer_email
 from .dataverse import SchemaEntry, build_compact_catalog, dataverse_env_missing, dataverse_get
 from .store.history import compact_describe_results, normalize_history, trim_history
 from .providers.llm_provider import (
@@ -580,7 +581,15 @@ def register_chat_api(app: Any) -> None:
             return _bad_request("message와 sessionId는 비어 있지 않은 문자열이어야 합니다.")
         message = message.strip()
 
-        if not project_exists(session_id):
+        # v1(2026-08-25): 프로젝트가 전부 개인 소유(data/users/<이메일>/projects/)라
+        # 채팅도 "누구"인지 알아야 어느 폴더를 볼지 알 수 있다 — 로그인이 꺼진
+        # 환경에서는 viewer_email이 고정 식별자를 돌려주므로 이 401은 실제로는
+        # "로그인 켜졌는데 세션이 없는" 경우에만 일어난다.
+        email = viewer_email(request)
+        if email is None:
+            return JSONResponse({"error": "로그인이 필요합니다."}, status_code=HttpStatus.UNAUTHORIZED)
+
+        if not project_exists(email, session_id):
             return JSONResponse(
                 {"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND
             )
@@ -624,7 +633,7 @@ def register_chat_api(app: Any) -> None:
         log_context = {
             "requestId": request_id,
             "sessionId": session_id,
-            "projectName": get_project_name(session_id),
+            "projectName": get_project_name(email, session_id),
         }
 
         async def run_chat() -> None:
@@ -654,14 +663,14 @@ def register_chat_api(app: Any) -> None:
                 # 테이블과 지침은 클라이언트 입력이 아니라 프로젝트 파일에서 매 요청 읽는다.
                 tables = [
                     table
-                    for table in get_project_tables(session_id)
+                    for table in get_project_tables(email, session_id)
                     if isinstance(table, str) and table
                 ]
-                instructions = get_project_instructions(session_id)
+                instructions = get_project_instructions(email, session_id)
                 session = _history_map.get(session_id)
                 if session is None:
                     session = _HistorySession(
-                        normalize_history(get_project_history(session_id))
+                        normalize_history(get_project_history(email, session_id))
                     )
 
                 rollback_messages = deepcopy(session.messages)
@@ -859,7 +868,7 @@ def register_chat_api(app: Any) -> None:
                         "API-컴팩션", f"스키마 조회 결과 {compacted}건 히스토리에서 생략 처리"
                     )
                 saved_messages = trim_history(session.messages, MAX_HISTORY_MESSAGES)
-                if not save_project_history(session_id, saved_messages):
+                if not save_project_history(email, session_id, saved_messages):
                     raise RuntimeError("프로젝트 히스토리를 저장하지 못했습니다.")
                 session.messages = saved_messages
                 session.last_used = time.monotonic()

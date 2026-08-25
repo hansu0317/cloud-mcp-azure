@@ -29,7 +29,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 if sys.version_info < (3, 11):
     raise RuntimeError("crm-ai-chat FastAPI 백엔드는 Python 3.11 이상이 필요합니다.")
 
-from .auth import get_session, is_configured as auth_is_configured, register_auth_routes
+from .auth import get_session, is_configured as auth_is_configured, register_auth_routes, viewer_email
 from .auth import users as auth_users
 from .chat_api import api_status, cleanup_loop, provider_health, provider_status, register_chat_api
 from . import dataverse
@@ -478,24 +478,11 @@ async def get_tables():
 # 이름 + 테이블 스코프 + 노트북 셀을 data/projects/<id>.json에 영속화한다.
 # Claude 대화 히스토리(history)는 여기서 절대 응답에 포함하지 않는다(chat_api.py 전용).
 
-# 2026-08-25: 계정별 접근 구분 — 로그인이 꺼진 환경(auth_is_configured()==False)에서는
-# 예전처럼 전부 admin 취급(모두 다 보임). 켜진 환경에선 LoginSessionMiddleware가 이미
-# /api/*를 세션 없이는 통과 못 시키므로, 여기서 session이 None인 경우는 사실상 못
-# 일어나지만 방어적으로 "아무것도 못 봄"으로 처리해둔다.
-def _viewer_context(request: Request) -> tuple[str | None, str | None, bool]:
-    if not auth_is_configured():
-        return None, None, True
-    session = get_session(request)
-    if session is None:
-        return None, None, False
-    return session["email"], session.get("department"), session["isAdmin"]
-
-
-# ─── API: 관리자 — 누가 관리자/어느 부서인지 (data/users.json) ───────────────────
-# 2026-08-25: 처음엔 .env의 ADMIN_EMAILS/DEPARTMENT_MAP이었는데 "서버 파일을 직접
-# 고쳐야 하고 재시작까지 해야 한다"는 피드백으로 화면에서 바로 추가/수정/삭제할 수
-# 있는 이 API로 옮겼다(backend/auth/users.py 참고). 로그인 자체가 꺼진 환경에선
-# _viewer_context와 같은 기준으로 그냥 통과시킨다(관리자 개념이 없는 환경이므로).
+# ─── API: 관리자 — 누가 로그인해도 되고 누가 관리자인지 (data/users.json) ───────────
+# 2026-08-25: 처음엔 .env의 ADMIN_EMAILS 한 줄이었는데 "서버 파일을 직접 고쳐야
+# 하고 재시작까지 해야 한다"는 피드백으로 화면에서 바로 추가/수정/삭제할 수 있는
+# 이 API로 옮겼다(backend/auth/users.py 참고). 로그인 자체가 꺼진 환경에선 관리자
+# 개념이 없는 환경이므로 그냥 통과시킨다.
 def _require_admin(request: Request) -> str | None:
     if not auth_is_configured():
         return None
@@ -521,11 +508,8 @@ async def upsert_admin_user_route(request: Request):
     body = await request.json()
     if not isinstance(body, dict) or not isinstance(body.get("email"), str) or not body["email"].strip():
         return JSONResponse({"error": "email이 필요합니다."}, status_code=HttpStatus.BAD_REQUEST)
-    department = body.get("department")
-    if department is not None and not isinstance(department, str):
-        return JSONResponse({"error": "department는 문자열이거나 없어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
     try:
-        entry = auth_users.upsert_user(body["email"], department, bool(body.get("isAdmin", False)))
+        entry = auth_users.upsert_user(body["email"], bool(body.get("isAdmin", False)))
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=HttpStatus.BAD_REQUEST)
     return entry
@@ -541,10 +525,13 @@ async def delete_admin_user_route(request: Request, email: str):
     return {"ok": True}
 
 
+# v1(2026-08-25): 프로젝트는 전부 개인 소유 — data/users/<이메일>/projects/. 로그인
+# 안 됐으면(email=None) 목록·상세·수정·삭제 전부 막는다(로그인이 꺼진 환경에서는
+# auth.viewer_email이 고정 식별자를 돌려주므로 이 None 분기는 실제로는 "로그인
+# 켜졌는데 세션이 없는" 경우에만 해당).
 @app.get("/api/projects")
 async def list_projects_route(request: Request):
-    email, department, is_admin = _viewer_context(request)
-    return {"projects": projects.list_projects(email, department, is_admin)}
+    return {"projects": projects.list_projects(viewer_email(request))}
 
 
 @app.post("/api/projects")
@@ -556,27 +543,14 @@ async def create_project_route(request: Request):
         return JSONResponse({"error": "name은 문자열이어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
     if "tables" in body and not _is_string_array(body["tables"]):
         return JSONResponse({"error": "tables는 문자열 배열이어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
-    if "department" in body and body["department"] is not None and not isinstance(body["department"], str):
-        return JSONResponse({"error": "department는 문자열이거나 없어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
     tables = body.get("tables", [])
     table_error = _validate_project_tables(tables)
     if table_error:
         return JSONResponse({"error": table_error}, status_code=HttpStatus.BAD_REQUEST)
-    email, _viewer_department, is_admin = _viewer_context(request)
-    # 2026-08-25: 공유(부서·공통) 프로젝트는 관리자만 만든다 — 일반 사용자가 만드는
-    # 프로젝트는 무조건 개인 전용이다(요청 body의 visibility는 무시). "관리자 계정
-    # 하나가 부서별 공용 프로젝트를 관리하고, 일반 사용자는 각자 개인 프로젝트만
-    # 만든다"는 모델이라 프론트에 선택 UI 자체가 없다 — 여기서도 클라이언트가
-    # 임의로 visibility=shared를 보내는 걸 막아 이중으로 강제한다.
-    visibility = "shared" if is_admin else "private"
-    # 부서는 "생성 시점에만" 정한다(이후엔 안 바뀜, projects.py 상단 docstring 참고) —
-    # 관리자만 고를 수 있고, 일반 사용자의 개인 프로젝트는 애초에 department가
-    # 의미 없다(private는 소유자만 보므로 _is_visible이 department를 안 봄).
-    raw_dept = body.get("department")
-    department = raw_dept.strip() if is_admin and isinstance(raw_dept, str) and raw_dept.strip() else None
-    return projects.create_project(
-        body.get("name", ""), tables, owner_email=email, department=department, visibility=visibility,
-    )
+    email = viewer_email(request)
+    if email is None:
+        return JSONResponse({"error": "로그인이 필요합니다."}, status_code=HttpStatus.UNAUTHORIZED)
+    return projects.create_project(email, body.get("name", ""), tables)
 
 
 @app.put("/api/projects/reorder")
@@ -585,18 +559,17 @@ async def reorder_projects_route(request: Request):
     body = await request.json()
     if not isinstance(body, dict) or not _is_string_array(body.get("order")):
         return JSONResponse({"error": "order는 프로젝트 id 문자열 배열이어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
-    email, department, is_admin = _viewer_context(request)
-    return {"projects": projects.reorder_projects(body["order"], email, department, is_admin)}
+    email = viewer_email(request)
+    if email is None:
+        return JSONResponse({"error": "로그인이 필요합니다."}, status_code=HttpStatus.UNAUTHORIZED)
+    return {"projects": projects.reorder_projects(email, body["order"])}
 
 
 @app.get("/api/projects/{project_id}")
 async def get_project_route(project_id: str, request: Request):
-    project = projects.get_project(project_id)
-    email, department, is_admin = _viewer_context(request)
-    # 목록엔 안 보였어도 ID를 직접 알면 상세 API로 우회 접근할 수 있던 걸 막는다 —
-    # "권한 없음"이 아니라 목록에서도 못 봤을 "찾을 수 없음"으로 통일해서 존재
-    # 여부 자체를 흘리지 않는다.
-    if project is None or not projects.can_view(project, email, department, is_admin):
+    project = projects.get_project(viewer_email(request), project_id)
+    # 존재 여부 자체를 안 흘리려고 "권한 없음"이 아니라 "찾을 수 없음"으로 통일한다.
+    if project is None:
         return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
     return project
 
@@ -612,8 +585,8 @@ _JOIN_CANDIDATE_EXCLUDE_TARGETS = {"systemuser", "team", "businessunit"}
 
 
 @app.get("/api/projects/{project_id}/join-candidates")
-async def project_join_candidates_route(project_id: str):
-    project = projects.get_project(project_id)
+async def project_join_candidates_route(project_id: str, request: Request):
+    project = projects.get_project(viewer_email(request), project_id)
     if project is None:
         return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
     tables = project.get("tables") or []
@@ -661,21 +634,11 @@ async def update_project_route(project_id: str, request: Request):
         table_error = _validate_project_tables(body["tables"])
         if table_error:
             return JSONResponse({"error": table_error}, status_code=HttpStatus.BAD_REQUEST)
-    # 목록에 안 보이는(=권한 없는) 프로젝트를 ID만으로 수정 못 하게 먼저 확인한다.
-    existing = projects.get_project(project_id)
-    email, department, is_admin = _viewer_context(request)
-    if existing is None or not projects.can_view(existing, email, department, is_admin):
-        return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
-    # 볼 수는 있어도(부서 공유) 소유자가 아니면 수정은 못 한다 — 동시편집 충돌 방지
-    # (2026-08-25, projects.py의 can_edit 주석 참고). department/visibility는 여기서
-    # 아예 안 받는다 — 만든 뒤엔 안 바뀐다(projects.py 상단 docstring, "개인 프로젝트를
-    # 나중에 공유로 넓힌다" 기능은 폐기됨).
-    if not projects.can_edit(existing, email, is_admin):
-        return JSONResponse({"error": "이 프로젝트는 읽기 전용입니다 — 소유자만 수정할 수 있습니다."}, status_code=HttpStatus.FORBIDDEN)
+    email = viewer_email(request)
     updated = projects.update_project(
-        project_id, name=body.get("name"), tables=body.get("tables"),
+        email, project_id, name=body.get("name"), tables=body.get("tables"),
         instructions=body.get("instructions"), cells=body.get("cells"),
-    )
+    ) if email else None
     if updated is None:
         return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
     return updated
@@ -683,13 +646,8 @@ async def update_project_route(project_id: str, request: Request):
 
 @app.delete("/api/projects/{project_id}")
 async def delete_project_route(project_id: str, request: Request):
-    existing = projects.get_project(project_id)
-    email, department, is_admin = _viewer_context(request)
-    if existing is None or not projects.can_view(existing, email, department, is_admin):
-        return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
-    if not projects.can_edit(existing, email, is_admin):
-        return JSONResponse({"error": "이 프로젝트는 읽기 전용입니다 — 소유자만 삭제할 수 있습니다."}, status_code=HttpStatus.FORBIDDEN)
-    ok = projects.delete_project(project_id)
+    email = viewer_email(request)
+    ok = projects.delete_project(email, project_id) if email else False
     if not ok:
         return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
     return {"ok": True}

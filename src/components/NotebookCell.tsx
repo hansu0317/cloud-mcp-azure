@@ -10,19 +10,17 @@ interface Props {
   onDelete:     () => void
   onTextChange: (text: string) => void
   onExport:     () => void
-  readOnly?:    boolean   // 내 소유가 아닌 공유/부서 프로젝트를 볼 때 — 실행·삭제·수정 다 막는다
 }
 
-export default function NotebookCell({ cell, onRun, onDelete, onTextChange, onExport, readOnly = false }: Props) {
+export default function NotebookCell({ cell, onRun, onDelete, onTextChange, onExport }: Props) {
   const taRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
-    // 읽기전용 셀은 자동 포커스도 안 준다 — 편집 가능한 것처럼 커서가 깜빡이면 오해를 준다.
-    if (taRef.current && !readOnly) {
+    if (taRef.current) {
       autoResize(taRef.current)
       taRef.current.focus()
     }
-  }, [readOnly])
+  }, [])
 
   const autoResize = (el: HTMLTextAreaElement) => {
     el.style.height = 'auto'
@@ -30,7 +28,7 @@ export default function NotebookCell({ cell, onRun, onDelete, onTextChange, onEx
   }
 
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (!readOnly && e.key === 'Enter' && e.shiftKey) { e.preventDefault(); onRun() }
+    if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); onRun() }
   }
 
   // 내용이 있는 셀(질문을 썼거나 답변을 받은 셀)만 확인창을 띄운다 — 방금 추가한
@@ -69,14 +67,10 @@ export default function NotebookCell({ cell, onRun, onDelete, onTextChange, onEx
           {output?.rawContent && (
             <button className="btn btn-sm" onClick={onExport} title="내보내기">↓</button>
           )}
-          {!readOnly && (
-            <>
-              <button className="btn btn-sm" onClick={onRun} disabled={isRunning}>
-                {isRunning ? '⏳' : '▶ 실행'}
-              </button>
-              <button className="btn btn-sm danger" onClick={handleDeleteClick}>×</button>
-            </>
-          )}
+          <button className="btn btn-sm" onClick={onRun} disabled={isRunning}>
+            {isRunning ? '⏳' : '▶ 실행'}
+          </button>
+          <button className="btn btn-sm danger" onClick={handleDeleteClick}>×</button>
         </div>
       </div>
 
@@ -85,11 +79,10 @@ export default function NotebookCell({ cell, onRun, onDelete, onTextChange, onEx
           ref={taRef}
           className="cell-ta"
           value={cell.text}
-          onChange={e => { if (!readOnly) { onTextChange(e.target.value); autoResize(e.target) } }}
+          onChange={e => { onTextChange(e.target.value); autoResize(e.target) }}
           onKeyDown={handleKey}
           placeholder="자연어로 질문하세요 (예: 고객 TOP 5 보여줘)"
           rows={2}
-          readOnly={readOnly}
         />
       </div>
 

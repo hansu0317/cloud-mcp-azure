@@ -44,14 +44,29 @@ SESSION_TTL_SECONDS = 8 * 60 * 60          # 근무시간 기준 8시간
 _STATE_TTL_SECONDS = 10 * 60               # 로그인 도중(리다이렉트 왕복) 넉넉히 10분
 GRAPH_SCOPES = ["User.Read"]
 
-# {session_id: {email, name, isAdmin, department, expiresAt}} / {state: issuedAt} —
-# 둘 다 순수 메모리.
+# {session_id: {email, name, isAdmin, expiresAt}} / {state: issuedAt} — 둘 다 순수 메모리.
 _sessions: dict[str, dict[str, Any]] = {}
 _pending_states: dict[str, float] = {}
+
+# v1(2026-08-25): 부서·관리자 공유 프로젝트는 보류(v2-department-access-control
+# 브랜치로 옮김) — 프로젝트가 전부 개인 폴더(data/users/<이메일>/projects/)에 있어서
+# "누구"인지 몰라도 되는 경로가 없다. 로그인 자체가 꺼진 환경(LOGIN_*이 .env에 없는
+# 로컬 개발 클론)에서만 이 고정 식별자로 대체한다 — 그런 환경엔 사람 개념이 없으니
+# 다 같이 이 폴더 하나를 쓴다.
+LOCAL_DEV_EMAIL = "local-dev@localhost"
 
 
 def is_configured() -> bool:
     return bool(LOGIN_TENANT_ID and LOGIN_CLIENT_ID and LOGIN_CLIENT_SECRET)
+
+
+def viewer_email(request: Request) -> str | None:
+    """로그인이 꺼진 환경에서는 고정 식별자, 켜진 환경에서는 세션의 이메일(없으면
+    None — 호출부가 401로 처리)."""
+    if not is_configured():
+        return LOCAL_DEV_EMAIL
+    session = get_session(request)
+    return session["email"] if session else None
 
 
 def _redirect_uri(request: Request) -> str:
@@ -146,10 +161,9 @@ def register_auth_routes(app: Any) -> None:
             "email": email,
             "name": name,
             "isAdmin": users.is_admin(email),
-            "department": users.get_department(email),
             "expiresAt": now + SESSION_TTL_SECONDS,
         }
-        log.info("AUTH", f"로그인 성공: {name} ({email}), 부서: {users.get_department(email) or '(미지정)'}", {})
+        log.info("AUTH", f"로그인 성공: {name} ({email})", {})
         response = RedirectResponse("/")
         response.set_cookie(
             COOKIE_NAME, session_id, max_age=SESSION_TTL_SECONDS,
@@ -172,7 +186,7 @@ def register_auth_routes(app: Any) -> None:
             )
         return {
             "loginRequired": True, "email": session["email"], "name": session["name"],
-            "isAdmin": session["isAdmin"], "department": session.get("department"),
+            "isAdmin": session["isAdmin"],
         }
 
     # ⚠️ 데모/개발 전용 — 실제 Microsoft 로그인 없이 이메일만으로 세션을 만든다.
@@ -200,7 +214,6 @@ def register_auth_routes(app: Any) -> None:
                 "email": email,
                 "name": f"(데모) {email}",
                 "isAdmin": users.is_admin(email),
-                "department": users.get_department(email),
                 "expiresAt": now + SESSION_TTL_SECONDS,
             }
             response = JSONResponse({"ok": True})

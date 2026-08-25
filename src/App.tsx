@@ -15,7 +15,7 @@ import './App.css'
 
 // LOGIN_*이 .env에 없는 환경(로컬 개발 클론 등)에서는 로그인한 사람 개념 자체가
 // 없다 — authUser=null이면 Header가 로그인 배지·로그아웃 버튼을 그냥 안 보여준다.
-type AuthUser = { email: string; name: string; isAdmin: boolean; department: string | null }
+type AuthUser = { email: string; name: string; isAdmin: boolean }
 
 // 마지막으로 열어둔 프로젝트만 기억하는 UI 편의용 키 — 실제 데이터(이름·테이블 스코프·
 // 셀·대화 기록)는 전부 서버 파일(data/projects/<id>.json)에 있으므로, 이 값이 없거나
@@ -56,24 +56,13 @@ export default function App() {
     getMe().then((me: AuthMe) => {
       if (!me.loginRequired) { setAuthState('ok'); return }
       if ('email' in me) {
-        setAuthUser({ email: me.email, name: me.name, isAdmin: me.isAdmin, department: me.department })
+        setAuthUser({ email: me.email, name: me.name, isAdmin: me.isAdmin })
         setAuthState('ok')
       } else {
         setAuthState('gate')
       }
     }).catch(() => setAuthState('gate'))
   }, [])
-
-  // 2026-08-25: "부서 5명이 같은 프로젝트를 동시에 고치면 서로 덮어쓴다" 문제 —
-  // 실시간 동시편집 대신 "소유자만 수정, 나머지는 읽기 전용"으로 갔다(사용자 결정).
-  // 서버(backend/store/projects.py의 can_edit, main.py 라우트)가 실제 방어선이고,
-  // 이건 그 판정을 화면에서 미리 보여줘서 눌러도 안 되는 버튼을 안 보이게 하는
-  // 용도다 — 여기서 true가 나와도 서버가 다시 확인하므로 이걸 우회해도 안전하다.
-  const canEditProject = useCallback((p: { ownerEmail?: string | null } | null | undefined): boolean => {
-    if (!authUser) return true   // 로그인 자체가 꺼진 환경 — 예전처럼 전부 편집 가능
-    if (authUser.isAdmin) return true
-    return !!p && p.ownerEmail === authUser.email
-  }, [authUser])
 
   // "로그아웃"이 아니라 "계정 전환"인 이유는 Header.tsx 주석 참고 — 진짜 Microsoft
   // 로그아웃은 같은 브라우저의 다른 회사 M365 웹앱(Outlook/Teams 등)까지 로그아웃
@@ -121,11 +110,8 @@ export default function App() {
   }, [authState])
 
   // 생성 직후 사이드바가 바로 테이블 선택 팝업을 띄울 수 있도록 만든 프로젝트를 반환한다.
-  // visibility는 더 이상 여기서 안 고른다 — 서버가 관리자 여부로 정한다(2026-08-25).
-  // department는 관리자가 공유 프로젝트를 만들 때만 의미 있고(생성 시점에만, 이후엔
-  // 안 바뀜) 일반 사용자가 보내도 서버가 무시한다.
-  const handleCreateProject = useCallback(async (name: string, department?: string | null): Promise<ProjectSummary> => {
-    const created = await createProject(name, [], department)
+  const handleCreateProject = useCallback(async (name: string): Promise<ProjectSummary> => {
+    const created = await createProject(name, [])
     refreshProjectList()
     setActiveProject(created)
     localStorage.setItem(LAST_ACTIVE_KEY, created.id)
@@ -133,7 +119,7 @@ export default function App() {
     return {
       id: created.id, name: created.name, tables: created.tables,
       createdAt: created.createdAt, updatedAt: created.updatedAt, order: created.order,
-      visibility: created.visibility, ownerEmail: created.ownerEmail, department: created.department,
+      ownerEmail: created.ownerEmail,
     }
   }, [refreshProjectList, showToast])
 
@@ -218,8 +204,6 @@ export default function App() {
   if (authState === 'checking') return null
   if (authState === 'gate') return <LoginGate />
 
-  const canEditActive = canEditProject(activeProject)
-
   return (
     <div className="app">
       <Header
@@ -233,7 +217,6 @@ export default function App() {
         authUser={authUser}
         onSwitchAccount={handleSwitchAccount}
         onOpenUserAdmin={() => setUserAdminOpen(true)}
-        canAddCell={canEditActive}
       />
       {userAdminOpen && <UserAdminModal onClose={() => setUserAdminOpen(false)} />}
       <div className="body">
@@ -247,8 +230,6 @@ export default function App() {
           onDeleteProject={handleDeleteProject}
           onSelectTables={handleSelectTables}
           onReorderProjects={handleReorderProjects}
-          canEditProject={canEditProject}
-          isAdmin={!authUser || authUser.isAdmin}
         />
         {activeProject && (
           <NotebookView
@@ -258,7 +239,6 @@ export default function App() {
             initialCells={activeProject.cells}
             onCellsChange={handleCellsChange}
             showToast={showToast}
-            readOnly={!canEditActive}
           />
         )}
         {activeProject && (
@@ -272,7 +252,6 @@ export default function App() {
             cells={activeProject.cells}
             onSave={handleSaveInstructions}
             showToast={showToast}
-            readOnly={!canEditActive}
           />
         )}
       </div>

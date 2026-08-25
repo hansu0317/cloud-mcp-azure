@@ -52,11 +52,9 @@ export interface ProjectSummary {
   createdAt: string
   updatedAt: string
   order: number
-  // 2026-08-25: 계정별 접근 구분(backend/projects.py 참고). 로그인 없는 환경/예전
-  // 프로젝트에서는 셋 다 안 올 수 있다 — visibility는 'shared'로 취급하면 된다.
-  visibility?: 'shared' | 'private'
+  // v1(2026-08-25): 프로젝트는 전부 개인 소유(data/users/<이메일>/projects/) —
+  // ownerEmail은 표시용일 뿐 화면에서 볼 수 있는 프로젝트는 항상 본인 것이다.
   ownerEmail?: string | null
-  department?: string | null
 }
 
 // 노트북 셀
@@ -91,9 +89,7 @@ export interface ProjectDetail {
   createdAt:     string
   updatedAt:     string
   order:         number
-  visibility?:   'shared' | 'private'
   ownerEmail?:   string | null
-  department?:   string | null
 }
 
 export interface QueryLog {
@@ -116,8 +112,8 @@ export interface NotebookHandle {
   addCell: (text?: string) => number
 }
 
-// GET /auth/me 응답 — backend/auth.py 참고. loginRequired=false면 .env에 LOGIN_*이
-// 설정 안 된 환경(로컬 개발 클론 등)이라 로그인 화면 자체를 안 띄운다.
+// GET /auth/me 응답 — backend/auth/__init__.py 참고. loginRequired=false면 .env에
+// LOGIN_*이 설정 안 된 환경(로컬 개발 클론 등)이라 로그인 화면 자체를 안 띄운다.
 export type AuthMe =
   | { loginRequired: false }
-  | { loginRequired: true; email: string; name: string; isAdmin: boolean; department: string | null }
+  | { loginRequired: true; email: string; name: string; isAdmin: boolean }

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 from backend import main
+from backend.auth import LOCAL_DEV_EMAIL
 from backend.store import projects
 from backend.core.logger import read_json_log_tail
 
@@ -19,25 +20,26 @@ from backend.core.logger import read_json_log_tail
 class FastApiContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path.cwd() / "data" / ".python-tests" / str(uuid.uuid4())
-        self.projects_dir = self.root / "data" / "projects"
-        self.projects_dir.mkdir(parents=True)
+        self.root.mkdir(parents=True)
         self.users_root = self.root / "data" / "users"
+        # auth_is_configured를 False로 패치해두면(아래) viewer_email()이 항상
+        # LOCAL_DEV_EMAIL을 돌려준다 — 이 파일의 모든 /api/projects 요청은 그
+        # 고정 계정의 개인 폴더를 쓴다.
+        self.projects_dir = self.users_root / LOCAL_DEV_EMAIL / "projects"
 
         self._patches = [
-            patch.object(projects, "PROJECTS_DIR", self.projects_dir),
             patch.object(projects, "USERS_ROOT", self.users_root),
-            patch.object(
-                projects,
-                "_LEGACY_GLOBAL_INST_FILE",
-                self.root / "data" / "instructions.json",
-            ),
             patch.object(projects.log, "info"),
             patch.object(projects.log, "error"),
             # 이 파일은 API 계약(요청 검증·응답 형태)을 다루지 로그인을 다루지 않는다 —
             # 로컬 .env에 LOGIN_*이 채워져 있으면 LoginSessionMiddleware가 세션 없는
             # /api/* 요청을 다른 검증보다 먼저 401로 끊어서 이 테스트들이 보려는
-            # 코드에 아예 도달을 못 한다(test_operations.py와 같은 이유).
+            # 코드에 아예 도달을 못 한다(test_operations.py와 같은 이유). main이
+            # import 시점에 복사해온 이름(auth_is_configured)과 auth 모듈 자신의
+            # is_configured(viewer_email이 내부에서 그대로 부름) 둘 다 별개
+            # 바인딩이라 각자 패치해야 한다.
             patch("backend.main.auth_is_configured", return_value=False),
+            patch("backend.auth.is_configured", return_value=False),
         ]
         for item in self._patches:
             item.start()
@@ -98,7 +100,7 @@ class FastApiContractTests(unittest.TestCase):
 
         self.assertTrue(
             projects.save_project_history(
-                project_id,
+                LOCAL_DEV_EMAIL, project_id,
                 [{"role": "user", "content": [{"type": "text", "text": "내부 기록"}]}],
             )
         )
@@ -191,7 +193,7 @@ class FastApiContractTests(unittest.TestCase):
         self.assertEqual(unknown.status_code, 404)
         self.assertEqual(list(self.projects_dir.glob("*.json")), [])
 
-        created = projects.create_project("서버 범위", ["account"])
+        created = projects.create_project(LOCAL_DEV_EMAIL, "서버 범위", ["account"])
         client_scope = self.request(
             "POST",
             "/api/chat",

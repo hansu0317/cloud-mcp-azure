@@ -13,12 +13,11 @@ interface Props {
   authUser:             { email: string; name: string; isAdmin: boolean } | null
   onSwitchAccount:      () => void
   onOpenUserAdmin:      () => void
-  canAddCell:           boolean   // 내 소유가 아닌 프로젝트를 보는 중이면 false(읽기 전용)
 }
 
 export default function Header({
   activeProjectName, onOpenProjects, onToggleSidebar, sidebarOpen, onToggleInstructions, instructionsOpen, notebookRef,
-  authUser, onSwitchAccount, onOpenUserAdmin, canAddCell,
+  authUser, onSwitchAccount, onOpenUserAdmin,
 }: Props) {
   return (
     <header>
@@ -35,11 +34,9 @@ export default function Header({
         📁 {activeProjectName || '프로젝트 불러오는 중…'}
       </button>
       <div className="h-div" />
-      {canAddCell && (
-        <div className="nb-only">
-          <button className="btn" onClick={() => notebookRef.current?.addCell()}>＋ 셀 추가</button>
-        </div>
-      )}
+      <div className="nb-only">
+        <button className="btn" onClick={() => notebookRef.current?.addCell()}>＋ 셀 추가</button>
+      </div>
       <div className="h-spacer" />
       <button
         className={`btn${instructionsOpen ? ' active' : ''}`}
@@ -56,10 +53,10 @@ export default function Header({
             {authUser.isAdmin && <span className="header-user-admin">관리자</span>}
             {authUser.name}
           </span>
-          {/* 사용자(부서·관리자) 관리 화면 — 관리자만 보인다(2026-08-25, data/users.json
-              +/api/admin/users, backend/auth/users.py). */}
+          {/* 로그인 허용 명단·관리자 관리 화면 — 관리자만 보인다(2026-08-25,
+              data/users.json + /api/admin/users, backend/auth/users.py). */}
           {authUser.isAdmin && (
-            <button className="btn btn-sm" onClick={onOpenUserAdmin} title="사용자(부서·관리자) 관리">👥 사용자</button>
+            <button className="btn btn-sm" onClick={onOpenUserAdmin} title="로그인 허용 명단·관리자 관리">👥 사용자</button>
           )}
           {/* "로그아웃" 대신 "계정 전환"인 이유: 진짜 Microsoft 로그아웃은 같은
               브라우저의 Outlook/Teams 등 다른 회사 M365 웹앱까지 같이 로그아웃시켜버린다
