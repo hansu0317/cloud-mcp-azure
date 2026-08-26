@@ -570,3 +570,16 @@ Local Ollama와 Dataverse가 준비된 환경에서는 `npm run test:e2e:safe`(`
   아니라 맨 앞으로 당기고, 시스템 프롬프트에 테이블명/엔티티집합명이 다르다는 구체적 예시를
   추가(`backend/dataverse.py`, `backend/chat_api.py`). 프롬프트 보강이라 약한 모델에서
   100% 해결을 보장하진 않음.
+
+- 2026-08-27: 저장소 아키텍처("개인 프로젝트를 서버 대신 사용자 개인 소유 공간에
+  둬야 하나?") 논의 — **중앙집중형(고객사당 서버 1대) 유지로 결론**. crm-ai-chat은
+  Anthropic류 멀티테넌트 SaaS가 아니라 고객사마다 서버를 개별 인도하는 모델
+  ([DEPLOYMENT_OPTIONS.md](DEPLOYMENT_OPTIONS.md) §3)이라, "중앙집중"은 "여러 회사
+  데이터가 섞인다"가 아니라 "한 회사 서버에 그 회사 직원 데이터가 모인다"는 뜻일
+  뿐이고 이미 사람별 폴더 격리(`data/users/<email>/projects/`)로 충분히 만족되고
+  있다고 판단. 로컬 설치형(Claude Desktop처럼 개인 데이터를 사용자 PC에)과 OneDrive
+  위임 저장(Graph API로 사용자 본인 OneDrive에) 둘 다 검토했으나 소규모 고객사의
+  운영 부담(PC별 파편화, 비-M365 고객 배제)이 더 크다고 보고 기각/보류 — 상세 비교와
+  향후 고객사별 옵션화 여지는 [FUTURE_STORAGE_OPTIONS.md](FUTURE_STORAGE_OPTIONS.md)에
+  별도 기록. `data/projects/`(레거시 최상위 폴더)는 죽은 데이터가 아니라 2차/3차
+  고도화 때 부서 공유 프로젝트(v2) 저장 위치로 재사용할 계획이라 삭제하지 않고 보존.
