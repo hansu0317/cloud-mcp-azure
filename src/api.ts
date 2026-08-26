@@ -66,19 +66,34 @@ export async function getProject(id: string): Promise<ProjectDetail | null> {
 // 눌러도 반영이 안 된다"는 피드백(2026-08-24)의 실제 원인이었다. 이제 실패하면
 // 던져서 호출부(App.tsx handleSaveInstructions → InstructionsPanel handleSave)가
 // 실제로 실패를 알고 사용자에게 보여줄 수 있게 한다.
+//
+// 같은 계정으로 여러 탭/기기를 열어두고 같은 프로젝트를 동시에 고치면, 나중에 저장한
+// 쪽이 먼저 저장된 내용을 조용히 덮어쓸 수 있다(lost update) — 그래서 저장할 때마다
+// 마지막으로 읽은 _rev를 같이 보내고, 서버가 그 사이 다른 곳에서 먼저 저장한 걸
+// 발견하면 409로 거절한다(backend/main.py update_project_route 참고). 그 경우를
+// 구분해서 호출부가 "덮어쓰기 실패" 대신 "다른 곳에서 먼저 저장됨"이라고 안내하고
+// 최신 내용을 다시 불러올 수 있도록 별도 에러 타입을 던진다.
+export class ProjectConflictError extends Error {
+  constructor() {
+    super('다른 탭이나 기기에서 먼저 저장되었습니다')
+  }
+}
+
 export async function updateProject(
   id: string,
-  patch: { name?: string; tables?: string[]; instructions?: Instructions; cells?: unknown[] },
-): Promise<void> {
+  patch: { name?: string; tables?: string[]; instructions?: Instructions; cells?: unknown[]; _rev?: number },
+): Promise<ProjectDetail> {
   const resp = await fetch(`${API.PROJECTS}/${id}`, {
     method:  'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify(patch),
   })
+  if (resp.status === 409) throw new ProjectConflictError()
   if (!resp.ok) {
     const body = await resp.json().catch(() => null) as { error?: string } | null
     throw new Error(body?.error || `저장 실패 (HTTP ${resp.status})`)
   }
+  return resp.json() as Promise<ProjectDetail>
 }
 
 export async function deleteProject(id: string): Promise<void> {

@@ -10,11 +10,11 @@ import asyncio
 import json
 import os
 import sys
-import tempfile
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -31,12 +31,22 @@ if sys.version_info < (3, 11):
 
 from .auth import get_session, is_configured as auth_is_configured, register_auth_routes, viewer_email
 from .auth import users as auth_users
-from .chat_api import api_status, cleanup_loop, provider_health, provider_status, register_chat_api
+from .chat_api import (
+    SCHEMA_COLLECTION,
+    SCHEMA_KEY,
+    api_status,
+    cleanup_loop,
+    provider_health,
+    provider_status,
+    register_chat_api,
+)
 from . import dataverse
 from .store import projects
 from .dataverse import dataverse_env_missing, fetch_entity_schema
 from .core.logger import get_active_log_file_path, log, read_json_log_tail
 from .providers.provider_factory import close_llm_provider
+from .stores.base import VersionConflict
+from .stores.factory import close_store, get_store
 from .core.sse import HttpStatus
 
 # ─── 환경변수 ─────────────────────────────────────────────────────────────────
@@ -53,18 +63,16 @@ ENABLE_API_DOCS = os.environ.get("ENABLE_API_DOCS", "").strip().lower() in {"1",
 FORWARDED_ALLOW_IPS = os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1,::1").strip() or "127.0.0.1,::1"
 
 CWD = Path.cwd()
-SCHEMA_FILE = CWD / "data" / "schema.json"
 DIST_DIR = CWD / "dist"
+
+# 스키마 카탈로그 저장 위치(collection="schema", key="catalog")는 chat_api.py에 단일
+# 정의돼 있고 여기서 그대로 재사용한다(위 import) — 두 파일이 각자 값을 따로 들고
+# 있다가 하나만 바뀌면 서로 다른 카탈로그를 보게 되는 사고를 막기 위함이다
+# (2026-08-26에 실제로 chat_api.py 쪽이 옛 data/schema.json을 계속 보고 있어서
+# 실제 채팅의 시스템 프롬프트 카탈로그가 비어 있던 회귀를 겪고 나서 이렇게 합쳤다).
 
 
 # ─── 유틸 ────────────────────────────────────────────────────────────────────
-def _read_json_file(path: Path, fallback):
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return fallback
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="milliseconds")
 
@@ -76,11 +84,12 @@ schema_cache: dict[str, str] = {}                       # 스키마 텍스트
 schema_meta: dict[str, dict[str, str]] = {}             # 등록 테이블 전체
 schema_lookups: dict[str, dict[str, list[str]]] = {}    # 테이블별 {컬럼: [대상 테이블...]} — 조인 후보 계산용
 pending_describe: dict[str, asyncio.Task] = {}
-# schema.json은 "전체를 읽고 한 항목만 고쳐서 전체를 다시 쓰는" 구조라, 여러 테이블을
+# 스키마 문서는 "전체를 읽고 한 항목만 고쳐서 전체를 다시 쓰는" 구조라, 여러 테이블을
 # 동시에 describe(스키마 갱신은 6개씩 병렬)하면 나중에 끝난 쓰기가 먼저 끝난 쓰기를
-# 통째로 덮어써 유실시킬 수 있다. 느린 Dataverse 네트워크 조회는 동시에 하되, 파일을
-# 읽고-고치고-쓰는 구간만 이 락으로 직렬화해 그 경합을 막는다.
-_schema_write_lock = asyncio.Lock()
+# 통째로 덮어써 유실시킬 수 있다. DocumentStore의 expected_rev(낙관적 동시성)로 충돌을
+# 감지해 짧게 재시도하는 방식으로 막는다(describe_table 참고) — 프로세스 내부 락 하나로
+# 막던 이전 방식과 달리, 나중에 서버 인스턴스가 여러 개여도 그대로 성립한다.
+SCHEMA_WRITE_MAX_RETRIES = 5
 
 
 def _is_string_array(value) -> bool:
@@ -101,14 +110,15 @@ def _validate_project_tables(tables: list[str]) -> str | None:
     return f'등록되지 않은 테이블 "{unknown}"입니다.' if unknown else None
 
 
-# schema.json → 인메모리 카탈로그 동기화 (기동 시 + 갱신 완료 후 공통 호출)
+# 스키마 문서 → 인메모리 카탈로그 동기화 (기동 시 + 갱신 완료 후 공통 호출)
 def reload_from_schema_file() -> None:
-    data = _read_json_file(SCHEMA_FILE, {})
+    doc = get_store().get(SCHEMA_COLLECTION, SCHEMA_KEY) or {}
+    data = doc.get("tables")
     schema_cache.clear()
     schema_meta.clear()
     schema_lookups.clear()
     if not isinstance(data, dict):
-        log.error("SCHEMA", "schema.json 최상위 값은 JSON 객체여야 합니다.")
+        log.error("SCHEMA", "스키마 문서의 tables 값은 JSON 객체여야 합니다.")
         return
     for table, info in data.items():
         if not isinstance(table, str) or not table or not isinstance(info, dict):
@@ -160,7 +170,7 @@ async def lifespan(_app: FastAPI):
         except Exception as exc:
             log.error("SERVER", "백그라운드 정리 작업 종료 실패", {"error": str(exc)})
 
-        closers = [("LLM", close_llm_provider)]
+        closers = [("LLM", close_llm_provider), ("Store", close_store)]
         close_dataverse = getattr(dataverse, "close_dataverse_client", None)
         if close_dataverse is not None:
             closers.append(("Dataverse", close_dataverse))
@@ -356,33 +366,14 @@ if auth_is_configured():
 
 
 # ─── API: 스키마 갱신 ─────────────────────────────────────────────────────────
-def _atomic_write_json(path: Path, value: object) -> None:
-    """같은 디렉터리의 임시 파일을 fsync한 뒤 원자적으로 교체한다."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            newline="\n",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temporary:
-            temporary_name = temporary.name
-            json.dump(value, temporary, ensure_ascii=False, indent=2)
-            temporary.write("\n")
-            temporary.flush()
-            os.fsync(temporary.fileno())
-        os.replace(temporary_name, path)
-        temporary_name = None
-    finally:
-        if temporary_name is not None:
-            try:
-                Path(temporary_name).unlink()
-            except FileNotFoundError:
-                pass
+def _read_schema_entry(doc: dict[str, Any], table: str) -> dict[str, Any]:
+    tables = doc.get("tables")
+    if not isinstance(tables, dict):
+        raise RuntimeError("스키마 문서의 tables 값은 JSON 객체여야 합니다.")
+    entry = tables.get(table, {})
+    if not isinstance(entry, dict):
+        raise RuntimeError(f'스키마의 "{table}" 항목은 JSON 객체여야 합니다.')
+    return entry
 
 
 async def describe_table(table: str) -> str:
@@ -390,12 +381,9 @@ async def describe_table(table: str) -> str:
     if missing:
         raise RuntimeError(f"{missing} 환경변수가 설정되지 않았습니다. (.env 확인)")
 
-    existing = _read_json_file(SCHEMA_FILE, {})
-    if not isinstance(existing, dict):
-        raise RuntimeError("schema.json 최상위 값은 JSON 객체여야 합니다.")
-    entry = existing.get(table, {})
-    if not isinstance(entry, dict):
-        raise RuntimeError(f'schema.json의 "{table}" 항목은 JSON 객체여야 합니다.')
+    store = get_store()
+    existing = store.get(SCHEMA_COLLECTION, SCHEMA_KEY) or {"tables": {}}
+    entry = _read_schema_entry(existing, table)
 
     # 이미 알고 있는 Lookup 컬럼의 대상 엔티티는 스키마 자체 속성이라 바뀌지 않는다 —
     # 캐시된 값을 넘겨서 매 갱신마다 같은 컬럼을 다시 조회하지 않게 한다.
@@ -403,28 +391,31 @@ async def describe_table(table: str) -> str:
     known_lookups = known_lookups if isinstance(known_lookups, dict) else None
     result = await fetch_entity_schema(table, known_lookups=known_lookups)
 
-    # 느린 네트워크 조회(fetch_entity_schema)는 이미 끝났으니, 파일 읽기-수정-쓰기만
-    # 락 안에서 다시 한다 — 락을 기다리는 동안 다른 테이블이 먼저 썼을 수 있으므로
-    # existing/entry를 여기서 새로 읽어야 그 갱신을 덮어쓰지 않는다.
-    async with _schema_write_lock:
-        existing = _read_json_file(SCHEMA_FILE, {})
-        if not isinstance(existing, dict):
-            raise RuntimeError("schema.json 최상위 값은 JSON 객체여야 합니다.")
-        entry = existing.get(table, {})
-        if not isinstance(entry, dict):
-            raise RuntimeError(f'schema.json의 "{table}" 항목은 JSON 객체여야 합니다.')
+    # 느린 네트워크 조회(fetch_entity_schema)는 이미 끝났으니, 문서 읽기-수정-쓰기만
+    # 아래에서 다시 한다 — 배치로 병렬 describe하는 다른 테이블이 먼저 썼을 수 있으므로
+    # 매 시도마다 새로 읽어 expected_rev로 그 갱신을 덮어쓰지 않게 하고, 충돌하면 그
+    # 사이 바뀐 최신 문서로 다시 시도한다(같은 문서를 여러 테이블이 공유하니 배치
+    # 크기만큼은 부딪힐 수 있어 재시도 상한을 넉넉히 둔다).
+    for _attempt in range(SCHEMA_WRITE_MAX_RETRIES):
+        doc = store.get(SCHEMA_COLLECTION, SCHEMA_KEY) or {"tables": {}}
+        entry = dict(_read_schema_entry(doc, table))
         entry.update({"schema": result.markdown, "entitySetName": result.entity_set_name, "updatedAt": _now_iso()})
         if result.lookups:
             entry["lookups"] = result.lookups
-        existing[table] = entry
-        _atomic_write_json(SCHEMA_FILE, existing)
-        # 파일 영속화가 성공한 뒤에만 메모리 캐시를 갱신한다.
+        tables = dict(doc.get("tables") or {})
+        tables[table] = entry
+        try:
+            store.put(SCHEMA_COLLECTION, SCHEMA_KEY, {**doc, "tables": tables}, expected_rev=doc.get("_rev"))
+        except VersionConflict:
+            continue
+        # 저장이 성공한 뒤에만 메모리 캐시를 갱신한다.
         schema_cache[table] = result.markdown
         if table not in schema_meta:
             schema_meta[table] = {"label": entry.get("label") or table, "domain": entry.get("domain") or "기타"}
         if result.lookups:
             schema_lookups[table] = result.lookups
-    return result.markdown
+        return result.markdown
+    raise RuntimeError(f'"{table}" 스키마 저장이 반복된 충돌로 실패했습니다. 다시 시도해주세요.')
 
 
 @app.post("/api/schemas/refresh")
@@ -433,8 +424,9 @@ async def schemas_refresh():
     if schema_refreshing:
         return {"updated": 0, "tables": [], "message": "갱신이 이미 진행 중입니다."}
 
-    data = _read_json_file(SCHEMA_FILE, {})
-    tables = list(data.keys())
+    doc = get_store().get(SCHEMA_COLLECTION, SCHEMA_KEY) or {}
+    tables_map = doc.get("tables")
+    tables = list(tables_map.keys()) if isinstance(tables_map, dict) else []
     if not tables:
         return {"updated": 0, "tables": []}
 
@@ -448,7 +440,7 @@ async def schemas_refresh():
     async def run_one(table: str) -> bool:
         t0 = time.monotonic()
         try:
-            await describe_table(table)  # describe_table()이 테이블별로 schema.json에 직접 저장
+            await describe_table(table)  # describe_table()이 테이블별로 스키마 문서에 직접 저장
             log.info("SCHEMA", f"{table} 완료 ({time.monotonic() - t0:.1f}초)")
             return True
         except Exception as e:
@@ -462,7 +454,7 @@ async def schemas_refresh():
 
         results = [t for t, ok in zip(tables, outcomes) if ok]
         log.info("SCHEMA", f"갱신 완료 — {len(results)}/{len(tables)}개 성공 (총 {time.monotonic() - total_start:.1f}초)")
-        reload_from_schema_file()   # schema.json → 인메모리 카탈로그 전체 재동기화
+        reload_from_schema_file()   # 스키마 문서 → 인메모리 카탈로그 전체 재동기화
         return {"updated": len(results), "tables": results}
     finally:
         schema_refreshing = False
@@ -630,15 +622,27 @@ async def update_project_route(project_id: str, request: Request):
         return JSONResponse({"error": "instructions 형식이 올바르지 않습니다."}, status_code=HttpStatus.BAD_REQUEST)
     if "cells" in body and not isinstance(body["cells"], list):
         return JSONResponse({"error": "cells는 배열이어야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
+    if "_rev" in body and body["_rev"] is not None and not isinstance(body["_rev"], int):
+        return JSONResponse({"error": "_rev는 정수여야 합니다."}, status_code=HttpStatus.BAD_REQUEST)
     if "tables" in body:
         table_error = _validate_project_tables(body["tables"])
         if table_error:
             return JSONResponse({"error": table_error}, status_code=HttpStatus.BAD_REQUEST)
     email = viewer_email(request)
-    updated = projects.update_project(
-        email, project_id, name=body.get("name"), tables=body.get("tables"),
-        instructions=body.get("instructions"), cells=body.get("cells"),
-    ) if email else None
+    # _rev를 보내면(프론트는 항상 보낸다 — src/api.ts updateProject 참고) 그 사이 다른
+    # 탭/기기에서 먼저 저장된 걸 조용히 덮어쓰지 않고 409로 거절한다 — 안 보내면(다른
+    # API 클라이언트 등) 예전처럼 무조건 덮어쓴다.
+    try:
+        updated = projects.update_project(
+            email, project_id, name=body.get("name"), tables=body.get("tables"),
+            instructions=body.get("instructions"), cells=body.get("cells"),
+            expected_rev=body.get("_rev"),
+        ) if email else None
+    except projects.ProjectVersionConflict:
+        return JSONResponse(
+            {"error": "다른 탭이나 기기에서 먼저 저장되었습니다 — 새로고침 후 다시 시도해주세요.", "code": "version_conflict"},
+            status_code=HttpStatus.CONFLICT,
+        )
     if updated is None:
         return JSONResponse({"error": "프로젝트를 찾을 수 없습니다."}, status_code=HttpStatus.NOT_FOUND)
     return updated

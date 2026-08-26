@@ -102,11 +102,12 @@ class OperationContractTests(unittest.TestCase):
     def test_describe_write_failure_does_not_mutate_memory_cache(self) -> None:
         previous = main.schema_cache.get("account")
         result = SimpleNamespace(markdown="new schema", entity_set_name="accounts", lookups={})
+        store = main.get_store()
         with (
             patch.object(main, "dataverse_env_missing", return_value=None),
             patch.object(main, "fetch_entity_schema", AsyncMock(return_value=result)),
-            patch.object(main, "_read_json_file", return_value={"account": {}}),
-            patch.object(main, "_atomic_write_json", side_effect=OSError("disk full")),
+            patch.object(store, "get", return_value={"tables": {"account": {}}}),
+            patch.object(store, "put", side_effect=OSError("disk full")),
         ):
             with self.assertRaises(OSError):
                 asyncio.run(main.describe_table("account"))

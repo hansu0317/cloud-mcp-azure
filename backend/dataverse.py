@@ -390,12 +390,25 @@ class SchemaEntry:
 
 
 def build_compact_catalog(data: dict[str, SchemaEntry]) -> str:
+    """dataverse_query의 path에 실제로 써야 하는 값(엔티티집합명)을 각 줄 맨 앞에 둔다.
+
+    예전엔 `- {table명}{라벨}{도메인} — 엔티티집합명: xxx` 순서라 엔티티집합명이 줄 끝에
+    조용히 붙어 있었는데, 약한 모델일수록 이걸 놓치고 테이블 논리명(예: new_project)을
+    그대로 path에 써서 조회가 매번 실패하는 걸 실측으로 확인했다(2026-08-26). 쿼리에
+    실제로 쓸 이름을 맨 앞으로 당기고 "이 이름으로 시작"이라고 그 자리에서 바로
+    알려주면, 그 줄만 보고도 헷갈릴 여지가 줄어든다.
+    """
     lines = []
     for table, info in data.items():
         if not info.schema:
             continue
         label = f" ({info.label})" if info.label else ""
         domain = f" [{info.domain}]" if info.domain else ""
-        set_name = f" — 엔티티집합명: {info.entity_set_name}" if info.entity_set_name else ""
-        lines.append(f"- {table}{label}{domain}{set_name}")
+        if info.entity_set_name:
+            lines.append(
+                f"- {info.entity_set_name} — dataverse_query의 path는 반드시 이 이름으로"
+                f" 시작 (테이블명: {table}{label}{domain})"
+            )
+        else:
+            lines.append(f"- {table}{label}{domain}")
     return "\n".join(lines)

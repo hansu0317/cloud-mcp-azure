@@ -35,7 +35,7 @@
 
 인도 전 반드시 확인:
 - `.env`는 애초에 git에 없으므로 tar/bundle/clone 어디에도 포함되지 않는다 — 별도 채널(비밀 저장소)로 전달하고 `.env.example`을 기준으로 고객이 직접 채우게 한다.
-- `data/`, `logs/`도 gitignore 대상이라 포함되지 않는다 — 새 checkout은 `data/schema.json`이 비어 있으므로, 조회 가능한 테이블이 없다(HANDOVER.md §6 참고). 실제 운영 데이터를 옮기는 게 아니라면 고객사 자체 Dataverse 서비스 주체로 새로 시딩해야 한다.
+- `data/`, `logs/`도 gitignore 대상이라 포함되지 않는다 — 새 checkout은 `data/schema/catalog.json`이 비어 있으므로, 조회 가능한 테이블이 없다(HANDOVER.md §6 참고). 실제 운영 데이터를 옮기는 게 아니라면 고객사 자체 Dataverse 서비스 주체로 새로 시딩해야 한다.
 - git 이력째로 넘기는 방식(bundle/원격 clone)은 과거 커밋에 남아있을 수 있는 민감정보까지 함께 넘어간다 — HANDOVER.md §9의 "출력에 노출된 키 폐기·재발급 완료, git 이력 검색으로 커밋 이력엔 없음을 확인" 기록을 인도 전 재확인한다.
 
 ## 4. 설치 후 확인

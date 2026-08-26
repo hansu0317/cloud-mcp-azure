@@ -85,7 +85,7 @@
 | 프로젝트 | 이름, 테이블 범위, 지침, 셀, LLM history를 한 JSON 파일로 저장하는 작업 단위 |
 | 테이블 범위 | 프로젝트가 LLM에 제공하고 서버가 OData 시작 엔티티 집합에 적용하는 범위. Dataverse 보안 역할을 대체하지 않는다. |
 | canonical history | `text`, `tool_call`, `tool_result` 블록으로 통일한 공급자 중립 대화 형식 |
-| 스키마 캐시 | `data/schema.json`의 테이블·컬럼·라벨·엔티티 집합명 메타데이터 |
+| 스키마 캐시 | `data/schema/catalog.json`의 테이블·컬럼·라벨·엔티티 집합명 메타데이터 |
 | SSE | 서버가 `text`, `tool`, `query`, `error`, `done` 이벤트를 브라우저에 전달하는 스트림 |
 
 ---
@@ -112,7 +112,7 @@ flowchart LR
     O --> OLLAMA["Ollama host"]
     GUARD --> DV["Dataverse Web API v9.2"]
     PROJECTS <--> PF[("data/projects/*.json")]
-    SCHEMA <--> SF[("data/schema.json")]
+    SCHEMA <--> SF[("data/schema/catalog.json")]
     LOG --> LF[("server.cloud.log 또는 server.local.log")]
 ```
 
@@ -220,7 +220,7 @@ sequenceDiagram
 
 | 도구 | 입력 | 실행 주체 | 효과 |
 |---|---|---|---|
-| `dataverse_describe_table` | `{ table }` | 앱 서버 | `data/schema.json`에서 컬럼·타입·엔티티 집합명을 읽음 |
+| `dataverse_describe_table` | `{ table }` | 앱 서버 | `data/schema/catalog.json`에서 컬럼·타입·엔티티 집합명을 읽음 |
 | `dataverse_query` | `{ path }` | 앱 서버 | Dataverse Web API에 인증된 GET 수행 |
 
 도구가 정의돼 있다는 사실과 실제 사용 기록은 다르다. 종료 전 레거시 로그·저장 history 감사에서는 두 도구 모두 실제 호출 흔적이 확인됐다. 로그와 history는 같은 호출을 중복 기록할 수 있으므로 단순 합산하지 않는다.
@@ -312,7 +312,7 @@ sequenceDiagram
 
 ### 6.2 스키마 파일
 
-`data/schema.json`은 앱이 알고 있는 테이블 카탈로그다. 전체 갱신은 이미 등록된 키만 새로 조회하며 새 clone에서 전체 테이블을 자동 발견하지 않는다.
+`data/schema/catalog.json`은 앱이 알고 있는 테이블 카탈로그다. 전체 갱신은 이미 등록된 키만 새로 조회하며 새 clone에서 전체 테이블을 자동 발견하지 않는다.
 
 ### 6.3 로그
 
@@ -328,7 +328,7 @@ sequenceDiagram
 | 우선순위 | 항목 | 이유 |
 |:---:|---|---|
 | P0 | `.env` 또는 비밀 저장소의 값 | LLM·Dataverse 연결 복구. 평문 백업 접근 제한 필요 |
-| P0 | `data/schema.json` | 카탈로그와 엔티티 집합명. Git에 없음 |
+| P0 | `data/schema/catalog.json` | 카탈로그와 엔티티 집합명. Git에 없음 |
 | P0 | `data/projects/` | 지침·셀·canonical history. Git에 없음 |
 | P1 | `logs/server.*.log` 및 회전본 | 감사·장애 분석. 업무/CRM 데이터 포함 가능 |
 | P1 | 정확한 소스 revision과 lockfile | 앱 코드·의존성 재현 |
@@ -402,7 +402,7 @@ Vite는 기본 5173, FastAPI/Uvicorn은 `PORT`를 사용하며 프록시는 `VIT
 |---|---|
 | Cloud | `LLM_PROVIDER=anthropic`, 유효한 Anthropic 키·모델, 외부 전송 승인, outbound HTTPS |
 | Local | `LLM_PROVIDER=ollama`, Ollama 실행, 모델 설치, `/api/tags` 접근, CPU/RAM/VRAM 용량 |
-| 공통 | Dataverse 서비스 주체·URL, `data/schema.json`, `data/projects/` 복구, 앱 포트 접근 통제 |
+| 공통 | Dataverse 서비스 주체·URL, `data/schema/catalog.json`, `data/projects/` 복구, 앱 포트 접근 통제 |
 
 ### 8.2 시작 후 확인
 
@@ -505,7 +505,7 @@ Local Ollama와 Dataverse가 준비된 환경에서는 `npm run test:e2e:safe`(`
 | health는 200이나 chat 비활성 | `chat.health.status`, `missingEnv`, 모델/endpoint |
 | Cloud LLM 실패 | outbound HTTPS, 키·모델 접근권, `/v1/models`, 제한·할당량 |
 | Local LLM 실패 | Ollama 프로세스, `/api/tags`, 모델 설치, RAM/VRAM, timeout |
-| 테이블 0개 | `data/schema.json` 존재·JSON 유효성·복구 여부 |
+| 테이블 0개 | `data/schema/catalog.json` 존재·JSON 유효성·복구 여부 |
 | 허용 엔티티 집합 없음 | 프로젝트 tables와 schema의 `entitySetName` 확인 |
 | Dataverse 401 | tenant/client/secret/URL, 앱 등록·보안 역할, 토큰 재발급 |
 | API 전체 401 | `API_KEY` 설정과 SPA 헤더 미지원 여부 |
@@ -549,3 +549,24 @@ Local Ollama와 Dataverse가 준비된 환경에서는 `npm run test:e2e:safe`(`
   아니라는 원 설계 의도와 달리 실사용에 필요 없다고 판단된 "되돌리기"(마지막 저장 상태로
   전체 되돌리기) 버튼 제거 — 개별 항목 삭제(×)로 충분. 자동 테스트 45→46개
   (`test_join_candidates_only_offers_fks_inside_project_table_scope` 추가).
+
+- 2026-08-26: 조인 탭의 다이어그램(`RelationshipDiagram.tsx`, 드래그앤드롭 캔버스·최대
+  2테이블 제한)을 세 번째 개편에도 "쓰기 어렵다"는 피드백으로 완전히 삭제. 다시 보니
+  자동 후보(`관계를 찾았습니다`) 대비 실제로 더 해주는 일이 없었음(둘 다 결국
+  `schema_lookups`의 같은 FK 데이터를 다룸) — 유일한 차이는 임의의 Lookup 컬럼을 캔버스에
+  놓인 아무 테이블에나 드래그해 실제 FK 여부와 무관하게 관계를 우길 수 있던 자유도인데,
+  기능이라기보다 잘못된 관계를 등록하기 쉬운 허점으로 판단해 포기. 대신 같은 자동 후보
+  데이터(`joinCandidates`)를 `fromTable` 기준으로 묶어 펼쳐보는 목록("➕ 테이블에서 찾아
+  추가하기")으로 대체 — 용어 탭의 `instr-term-group` 패턴 재사용. 설명(label) 입력은
+  다이어그램의 "관계 상세" 패널이 없어지면서 `JoinRow`에 인라인 ✎ 편집으로 이동.
+  `src/lib/schemaColumns.ts`의 `LOOKUP_TYPES`(다이어그램 전용)도 같이 정리.
+
+  같은 날 실제 사용 중 발견한 버그 2건도 수정: ①테이블 스코프를 바꾼 직후
+  `InstructionsPanel`의 조인 후보 재조회가 PATCH 저장보다 먼저 도착하면 옛 스코프 기준
+  후보가 남는 경합 — `projectUpdatedAt`(저장 성공 후 갱신되는 값)을 재조회 useEffect의
+  의존성에 추가해 저장 완료 후 한 번 더 재조회되게 함. ②로컬 Ollama(llama3.1:8b) 실측에서
+  `dataverse_query`가 테이블 논리명(`new_project`)을 그대로 path에 써서 실제 스코프 안
+  테이블도 조회 실패하는 현상 발견 — `build_compact_catalog()`가 엔티티집합명을 줄 끝이
+  아니라 맨 앞으로 당기고, 시스템 프롬프트에 테이블명/엔티티집합명이 다르다는 구체적 예시를
+  추가(`backend/dataverse.py`, `backend/chat_api.py`). 프롬프트 보강이라 약한 모델에서
+  100% 해결을 보장하진 않음.

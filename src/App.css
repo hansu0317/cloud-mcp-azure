@@ -178,10 +178,8 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 
 /* 2026-08-24: "등록된 목록"과 "새로 추가하는 UI"가 뒤섞여 보여서 헷갈린다는 피드백 —
    세 탭 모두 이 둘을 섹션 제목과 접이식 토글로 확실히 나눈다. */
-.instr-section { margin-top: 14px; padding-top: 10px; border-top: 1px solid #1e2533; }
 .instr-section-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 7px; padding: 10px 4px 6px; font-size: 12px; font-weight: 700; color: #cbd5e1; }
 .instr-section-count { font-size: 10px; font-weight: 700; color: #7dd3fc; background: #0d1525; border-radius: 8px; padding: 1px 6px; }
-.instr-section-hint { font-size: 10.5px; font-weight: 400; color: #64748b; }
 .instr-add-toggle { width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; margin-top: 8px; font-size: 12px; font-weight: 600; color: #a5b4fc; background: #11162a; border: 1px solid #232c42; border-radius: 6px; cursor: pointer; font-family: inherit; }
 .instr-add-toggle:hover { background: #161c36; border-color: #2d3860; }
 .instr-add-toggle-arrow { color: #64748b; font-size: 10px; }
@@ -198,9 +196,14 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 .instr-join-row-tables b { color: #e2e8f0; font-weight: 700; }
 .instr-join-row-selfnote { font-size: 11px; font-weight: 400; color: #64748b; }
 .instr-join-row-cols { font-family: 'Consolas', 'JetBrains Mono', monospace; font-size: 10px; color: #475569; margin-top: 1px; }
-/* 설명(label)은 이제 다이어그램의 "관계 상세" 패널에서만 입력한다(2026-08-24) —
-   여기 목록엔 값이 있을 때만 원본 컬럼명 줄 뒤에 짧게 얹어서 보여준다. */
+/* 값이 있을 때만 원본 컬럼명 줄 뒤에 짧게 얹어서 보여준다. 입력은 ✎ 아이콘을
+   눌러야만 뜨는 instr-join-row-labelform에서 한다(다이어그램 제거, 2026-08-26). */
 .instr-join-row-label { font-family: 'Pretendard', sans-serif; color: #93c5fd; }
+.instr-join-row-actions { flex-shrink: 0; display: flex; align-items: center; gap: 2px; }
+.instr-row-edit { flex-shrink: 0; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; background: transparent; border: none; color: #475569; font-size: 12px; cursor: pointer; border-radius: 4px; line-height: 1; }
+.instr-row-edit:hover { color: #93c5fd; background: #0d1120; }
+.instr-join-row-labelform { display: flex; gap: 6px; margin-top: 6px; }
+.instr-join-row-labelform .instr-select { flex: 1; }
 
 /* 2026-08-24 후속: 등록된 목록이 길어지면 "추가하기" 토글이 스크롤 맨 아래로
    밀려나 안 보인다는 피드백 — .instr-panel-body(스크롤 영역) 밖, 저장 버튼
@@ -254,115 +257,6 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 .instr-cellpick-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 10px 4px; }
 .instr-cellpick { font-size: 11px; padding: 4px 10px; border-radius: 999px; background: #0d1a12; border: 1px solid #16351f; color: #86efac; cursor: pointer; font-family: inherit; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .instr-cellpick:hover { border-color: #22c55e; color: #bbf7d0; }
-/* 대부분은 위 목록·드롭다운으로 끝나므로, 다이어그램은 특이 케이스용 보조
-   링크로 눈에 덜 띄게 둔다(기본 화면에서 강조하지 않음). */
-.instr-diagram-link { margin: 10px 10px 0; color: #64748b; border-style: dashed; }
-.instr-diagram-link:hover { color: #94a3b8; }
-
-/* 테이블 연결 다이어그램(RelationshipDiagram) — 좌표는 저장 안 하고 열 때마다 다시
-   계산한다. 2026-08-24 두 차례 개편: ①원래 여러 테이블을 한 캔버스에 자유 배치하는
-   방식(Power BI 모델 뷰 스타일)이었는데 3~5개만 놓아도 선이 꼬여 "그래프가
-   이상하다"는 피드백 → 드롭다운으로 두 테이블만 고르는 방식으로 바꿨다가,
-   ②"왼쪽엔 원래 테이블 목록이 있어야 하고 드래그로 옮기는 방식은 유지하되 두
-   개까지만, 오른쪽엔 관계 상세(설명 포함)를 보여달라"는 피드백으로 지금의 3분할
-   (팔레트 · 캔버스 · 상세) 레이아웃이 됐다. */
-.rdiag-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 300; display: flex; align-items: center; justify-content: center; }
-.rdiag-inner { background: #0a0e18; border: 1px solid #1e2533; border-radius: 10px; width: 94vw; height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
-.rdiag-hdr { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 14px 16px 12px; border-bottom: 1px solid #1e2533; flex-shrink: 0; }
-/* min-height:0은 필수다 — flex 아이템은 기본값(auto)이면 내용물 높이만큼 자기
-   자신을 늘려버려서, 안쪽 .rdiag-stage/.rdiag-palette/.rdiag-detail의 overflow:auto가
-   아예 발동을 못 하고 대신 다이어그램 전체(나아가 브라우저 페이지)가 스크롤됐다. */
-.rdiag-body { flex: 1; overflow: hidden; display: flex; min-height: 0; }
-.rdiag-layout { display: flex; width: 100%; height: 100%; min-height: 0; }
-
-/* 왼쪽 팔레트 — 이 프로젝트 테이블 전체를 접힌 목록으로 나열. 테이블 행을 캔버스로
-   끌어다 놓으면 배치된다(최대 2개). ▶는 컬럼 미리보기(드래그 대상 아님 — 실제
-   연결은 캔버스에 배치된 상자 안 컬럼을 끌어서 만든다). */
-.rdiag-palette { width: 210px; flex-shrink: 0; overflow-y: auto; min-height: 0; padding: 14px 8px; border-right: 1px solid #1e2533; }
-.rdiag-palette-hdr { font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.04em; padding: 0 6px 8px; }
-.rdiag-palette-item { margin-bottom: 1px; }
-.rdiag-palette-row { display: flex; align-items: center; gap: 6px; padding: 6px; border-radius: 5px; cursor: grab; font-size: 12px; color: #94a3b8; }
-.rdiag-palette-row:hover { background: #131a2e; color: #cbd5e1; }
-.rdiag-palette-row.placed { color: #64748b; }
-.rdiag-palette-toggle { flex-shrink: 0; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; background: transparent; border: none; color: #475569; font-size: 9px; cursor: pointer; padding: 0; }
-.rdiag-palette-toggle:hover { color: #94a3b8; }
-.rdiag-palette-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rdiag-palette-badge { flex-shrink: 0; font-size: 9px; color: #7dd3fc; background: #0d1525; border-radius: 8px; padding: 1px 6px; }
-.rdiag-palette-cols { padding: 2px 0 6px 22px; }
-.rdiag-palette-col { font-size: 10.5px; color: #475569; padding: 2px 0; }
-.rdiag-palette-empty { font-size: 10.5px; color: #334155; padding: 2px 0 2px 22px; }
-
-.rdiag-stage { position: relative; flex: 1; overflow: auto; min-height: 0; padding: 24px; }
-.rdiag-stage-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #334155; font-size: 12.5px; text-align: center; padding: 0 40px; pointer-events: none; }
-/* z-index: svg가 nodes보다 위(2>1)에 있어야 한다 — 아니면 .rdiag-edge-del/-add의
-   pointer-events:auto가 소용없다. .rdiag-nodes는 상자를 감싸는 컨테이너라 상자 사이
-   "빈틈"도 그 사각형 바운딩 박스 안이라서(자식이 안 그려진 자리라도), z-index가 더
-   높으면 그 빈틈에 클릭이 와도 항상 nodes가 먼저 받아버려 밑에 깔린 svg의 ×/＋가
-   전혀 안 눌렸다(2026-08-24 — 실제 마우스 클릭/드래그 테스트로 재현·확인함). svg
-   전체를 위로 올려도 되는 건, 마커 두 종류(-del/-add) 말고는 전부 pointer-events:
-   none을 유지해서 나머지(선·N/1 라벨)는 계속 클릭을 통과시키기 때문이다. */
-.rdiag-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 2; }
-.rdiag-card { font-size: 10px; font-weight: 700; fill: #7dd3fc; font-family: 'Consolas', 'JetBrains Mono', monospace; }
-.rdiag-nodes { position: relative; z-index: 1; }
-.rdiag-nodes-pair { display: flex; gap: 100px; align-items: flex-start; }
-.rdiag-node { width: 220px; flex-shrink: 0; background: #0d1120; border: 1px solid #2a3144; border-radius: 8px; padding: 10px 12px 6px; transition: border-color 0.15s, box-shadow 0.15s; }
-.rdiag-node-target { border-color: #22c55e; box-shadow: 0 0 0 1px #22c55e; }
-.rdiag-node-hdr { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 13px; font-weight: 700; color: #e2e8f0; }
-.rdiag-node-remove { flex-shrink: 0; background: transparent; border: none; color: #334155; font-size: 11px; cursor: pointer; padding: 0 2px; line-height: 1; }
-.rdiag-node-remove:hover { color: #f87171; }
-.rdiag-node-name { font-size: 10.5px; color: #475569; font-family: 'Consolas', 'JetBrains Mono', monospace; margin-top: 1px; }
-.rdiag-node-self { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 6px; font-size: 10px; color: #fbbf24; background: #1c1608; border-radius: 4px; padding: 3px 6px; }
-.rdiag-node-self-del { flex-shrink: 0; background: transparent; border: none; color: #fbbf24; opacity: 0.7; cursor: pointer; font-size: 11px; line-height: 1; padding: 0 2px; }
-.rdiag-node-self-del:hover { opacity: 1; color: #f87171; }
-/* 자기참조 후보(아직 저장 안 함) — 등록된 것(노란색)과 구분되게 초록 계열로. */
-.rdiag-node-self-candidate { color: #86efac; background: #0d1a12; border: 1px dashed #16351f; }
-.rdiag-node-self-add { flex-shrink: 0; background: transparent; border: none; color: #86efac; cursor: pointer; font-size: 12px; line-height: 1; padding: 0 2px; }
-.rdiag-node-self-add:hover { color: #bbf7d0; }
-
-/* 오른쪽 "관계 상세" 패널 — 캔버스에 놓인 테이블(들)과 관련된 연결을 전부 나열하고,
-   설명(label)은 여기서만 입력한다. 지침 패널 목록 쪽 줄마다 있던 "＋설명 추가"
-   프롬프트가 목록을 너무 길어 보이게 한다는 피드백(2026-08-24)으로 옮겨왔다. */
-.rdiag-detail { width: 260px; flex-shrink: 0; overflow-y: auto; min-height: 0; padding: 14px; border-left: 1px solid #1e2533; }
-.rdiag-detail-hdr { font-size: 10.5px; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.04em; padding: 0 2px 10px; }
-.rdiag-detail-empty { font-size: 11.5px; color: #334155; line-height: 1.5; padding: 0 2px; }
-.rdiag-detail-row { padding: 8px; margin-bottom: 6px; background: #0d1120; border: 1px solid #1e2533; border-radius: 6px; }
-.rdiag-detail-row-hdr { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; font-size: 11.5px; color: #cbd5e1; line-height: 1.4; margin-bottom: 6px; }
-.rdiag-detail-label { width: 100%; font-size: 11.5px; }
-
-/* 연결선 가운데 ×(rdiag-edge-del) — 부모 .rdiag-svg는 pointer-events:none이라
-   선 자체는 클릭이 안 통하지만(장식용), 이 <g>만 auto로 되돌려 클릭 가능하게 한다. */
-.rdiag-edge-del { pointer-events: auto; cursor: pointer; }
-.rdiag-edge-del circle { fill: #12172a; stroke: #3b4258; stroke-width: 1; }
-.rdiag-edge-del text { font-size: 11px; fill: #64748b; font-family: inherit; }
-.rdiag-edge-del:hover circle { fill: #2a1520; stroke: #f87171; }
-.rdiag-edge-del:hover text { fill: #f87171; }
-
-/* 점선(자동 후보) 가운데 ＋ — 드래그 없이 클릭 한 번으로 그 관계 하나만 추가한다
-   (2026-08-24: "테이블 놓으니 후보 선이 다 뜨는데 하나씩 못 고르냐"는 피드백). */
-.rdiag-edge-add { pointer-events: auto; cursor: pointer; }
-.rdiag-edge-add circle { fill: #0d1a12; stroke: #3b4258; stroke-width: 1; }
-.rdiag-edge-add text { font-size: 10px; fill: #64748b; font-family: inherit; }
-.rdiag-edge-add:hover circle { fill: #0f2417; stroke: #22c55e; }
-.rdiag-edge-add:hover text { fill: #86efac; }
-.rdiag-node-empty { margin: 8px -12px 0; padding: 8px 12px 4px; font-size: 10.5px; color: #334155; border-top: 1px solid #1e2533; }
-.rdiag-node-cols { margin: 8px -12px 0; border-top: 1px solid #1e2533; }
-.rdiag-node-col { padding: 5px 12px; font-size: 11px; color: #64748b; border-bottom: 1px solid #161c2c; cursor: grab; border-left: 2px solid transparent; }
-.rdiag-node-col:last-child { border-bottom: none; }
-.rdiag-node-col:hover { background: #131a2e; color: #cbd5e1; }
-.rdiag-node-col.used { color: #cbd5e1; border-left-color: #4f5b76; }
-.rdiag-node-col.candidate { border-left-style: dashed; border-left-color: #3b4258; }
-/* "대상"(target-only) 행 = 이 테이블 자신의 lookup이 아니라 다른 테이블이 이
-   컬럼(보통 PK)을 가리켜서 선이 닿는 자리 — 끌 수 없어서(draggable=false) 커서도
-   기본값으로 두고, 오른쪽에 작은 뱃지로 "이건 다른 종류다"를 알려준다. 뱃지를
-   absolute로 띄워서 라벨+원본명 두 줄 쌓임(rdiag-node-col-label/name)은 그대로 둔다. */
-.rdiag-node-col { position: relative; }
-.rdiag-node-col.target-only { cursor: default; padding-right: 42px; }
-.rdiag-node-col-badge { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-size: 8.5px; color: #475569; background: #161c2c; border-radius: 6px; padding: 1px 6px; }
-/* 라벨(사람이 읽는 이름) + 실제 컬럼명(schema.json 원본) 두 줄 — 실무자가 아니면
-   new_l_q1 같은 원본 컬럼명만으론 뭘 가리키는지 알기 어려워서, Dataverse에 이미
-   등록된 한국어 설명(desc)을 위 줄에 크게 보여주고 원본명은 작게 참고용으로 남긴다. */
-.rdiag-node-col-label { display: block; }
-.rdiag-node-col-name { display: block; font-size: 9.5px; font-family: 'Consolas', 'JetBrains Mono', monospace; opacity: 0.7; margin-top: 1px; }
 
 /* Notebook */
 .notebook-view { flex: 1; display: flex; overflow: hidden; }

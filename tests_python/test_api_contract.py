@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from backend import main
 from backend.auth import LOCAL_DEV_EMAIL
 from backend.store import projects
+from backend.stores.local_file_store import LocalFileStore
 from backend.core.logger import read_json_log_tail
 
 
@@ -26,9 +27,10 @@ class FastApiContractTests(unittest.TestCase):
         # LOCAL_DEV_EMAIL을 돌려준다 — 이 파일의 모든 /api/projects 요청은 그
         # 고정 계정의 개인 폴더를 쓴다.
         self.projects_dir = self.users_root / LOCAL_DEV_EMAIL / "projects"
+        self._store = LocalFileStore(root=self.root / "data")
 
         self._patches = [
-            patch.object(projects, "USERS_ROOT", self.users_root),
+            patch.object(projects, "get_store", lambda: self._store),
             patch.object(projects.log, "info"),
             patch.object(projects.log, "error"),
             # 이 파일은 API 계약(요청 검증·응답 형태)을 다루지 로그인을 다루지 않는다 —
@@ -116,6 +118,7 @@ class FastApiContractTests(unittest.TestCase):
             {"tables": ["not_registered"]},
             {"instructions": {"joins": [], "terms": []}},
             {"cells": {}},
+            {"_rev": "1"},
         )
         for body in invalid_patches:
             with self.subTest(body=body):
@@ -134,6 +137,37 @@ class FastApiContractTests(unittest.TestCase):
         deleted = self.request("DELETE", f"/api/projects/{project_id}")
         self.assertEqual(deleted.status_code, 200)
         self.assertEqual(self.request("GET", f"/api/projects/{project_id}").status_code, 404)
+
+    def test_patch_with_stale_rev_is_rejected_with_409(self) -> None:
+        """멀티탭 시나리오의 HTTP 계약: 탭 A가 저장한 뒤, 탭 B가 자기가 열었을 때의
+        (이제는 낡은) _rev를 들고 저장하려 하면 409로 거절되고 탭 A의 내용이 남아야
+        한다. 최신 _rev로 다시 보내면 성공한다."""
+        created = self.request("POST", "/api/projects", json={"name": "원본"}).json()
+        project_id, stale_rev = created["id"], created["_rev"]
+
+        # 탭 A가 먼저 저장 — _rev가 올라간다.
+        tab_a = self.request("PATCH", f"/api/projects/{project_id}", json={"name": "탭A가 바꿈"})
+        self.assertEqual(tab_a.status_code, 200)
+
+        # 탭 B는 여전히 원래 _rev를 들고 있다 — 그걸로 저장을 시도하면 거절돼야 한다.
+        conflict = self.request(
+            "PATCH", f"/api/projects/{project_id}", json={"name": "탭B가 덮어쓰려 함", "_rev": stale_rev},
+        )
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(conflict.json()["code"], "version_conflict")
+        self.assertEqual(self.request("GET", f"/api/projects/{project_id}").json()["name"], "탭A가 바꿈")
+
+        # 탭 B가 최신 내용을 다시 불러온 뒤(새 _rev로) 재시도하면 성공한다.
+        latest_rev = self.request("GET", f"/api/projects/{project_id}").json()["_rev"]
+        retry = self.request(
+            "PATCH", f"/api/projects/{project_id}", json={"name": "탭B 재시도 성공", "_rev": latest_rev},
+        )
+        self.assertEqual(retry.status_code, 200)
+        self.assertEqual(retry.json()["name"], "탭B 재시도 성공")
+
+        # _rev를 아예 안 보내면(예전 클라이언트 등) 예전처럼 무조건 덮어써야 한다.
+        no_rev = self.request("PATCH", f"/api/projects/{project_id}", json={"name": "무조건 덮어쓰기"})
+        self.assertEqual(no_rev.status_code, 200)
 
     def test_join_candidates_only_offers_fks_inside_project_table_scope(self) -> None:
         # main.schema_meta는 setUp에서 "account" 하나만 등록해두므로, 이 테스트에서만

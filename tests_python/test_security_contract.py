@@ -7,19 +7,21 @@ import shutil
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from backend import chat_api
+from backend.stores.local_file_store import LocalFileStore
 
 
 class DataverseGuardContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path.cwd() / "data" / ".python-tests" / str(uuid.uuid4())
         self.root.mkdir(parents=True)
-        self.schema_file = self.root / "schema.json"
-        self.schema_file.write_text(
-            json.dumps(
-                {
+        self.store = LocalFileStore(root=self.root)
+        self.store.put(
+            chat_api.SCHEMA_COLLECTION, chat_api.SCHEMA_KEY,
+            {
+                "tables": {
                     "account": {
                         "label": "고객",
                         "domain": "영업",
@@ -33,11 +35,9 @@ class DataverseGuardContractTests(unittest.TestCase):
                         "schema": "| 컬럼명 | 타입 | 설명 |\n|---|---|---|",
                     },
                 },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
+            },
         )
-        self._schema_patch = patch.object(chat_api, "SCHEMA_FILE", self.schema_file)
+        self._schema_patch = patch.object(chat_api, "get_store", lambda: self.store)
         self._schema_patch.start()
 
     def tearDown(self) -> None:
@@ -84,7 +84,7 @@ class DataverseGuardContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             chat_api._guard_odata_path("invented_entities?$top=1", [])
 
-        self.schema_file.write_text("{}", encoding="utf-8")
+        self.store.put(chat_api.SCHEMA_COLLECTION, chat_api.SCHEMA_KEY, {"tables": {}})
         with self.assertRaises(ValueError):
             chat_api._guard_odata_path("accounts?$top=1", [])
 
@@ -112,6 +112,40 @@ class DataverseGuardContractTests(unittest.TestCase):
 
         self.assertIn("엔티티집합명: accounts", allowed)
         self.assertIn("스코프 밖", denied)
+
+
+class SensitiveFieldRedactionTests(unittest.IsolatedAsyncioTestCase):
+    """2026-08-26: 테스트 프로젝트 스코프에 실수로 들어간 계정관리 테이블의
+    new_txt_password 값이 채팅 답변에 평문으로 그대로 노출된 실측 사고 이후 추가한
+    계약 — 프로젝트 테이블 스코프 큐레이션이 실수해도 이 서버 쪽 가드가 한 번 더
+    막는다는 걸 회귀로 잡아둔다."""
+
+    async def test_password_like_fields_are_redacted_from_query_results(self) -> None:
+        payload = json.dumps({
+            "value": [
+                {"new_txt_id": "adcrm1@qualisoft.co.kr", "new_txt_password": "roqkf@0309", "new_name": "퀄리"},
+            ]
+        })
+        with (
+            patch.object(chat_api, "_guard_odata_path", return_value="new_account_maintances"),
+            patch.object(chat_api, "dataverse_get", AsyncMock(return_value=payload)),
+        ):
+            result = await chat_api._dataverse_query("new_account_maintances", ["new_account_maintance"])
+
+        self.assertNotIn("roqkf@0309", result)
+        self.assertIn("비공개 처리됨", result)
+        self.assertIn("퀄리", result)   # 민감하지 않은 다른 필드는 그대로 남아야 한다
+
+    async def test_nested_sensitive_fields_are_also_redacted(self) -> None:
+        payload = json.dumps({"value": [{"outer": {"api_key": "sk-live-abc123"}, "safe": "ok"}]})
+        with (
+            patch.object(chat_api, "_guard_odata_path", return_value="whatever"),
+            patch.object(chat_api, "dataverse_get", AsyncMock(return_value=payload)),
+        ):
+            result = await chat_api._dataverse_query("whatever", [])
+
+        self.assertNotIn("sk-live-abc123", result)
+        self.assertIn("ok", result)
 
 
 if __name__ == "__main__":

@@ -1,18 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { API } from '../constants'
 import { NOISE_COLUMN_RE, joinKey } from '../lib/schemaColumns'
-import RelationshipDiagram from './RelationshipDiagram'
 import type { Cell, Instructions, JoinDef, TermDef, ExampleDef } from '../types'
 
 interface Props {
-  collapsed:     boolean
-  projectId:     string
-  projectName:   string
-  projectTables: string[]
-  instructions:  Instructions
-  cells:         Cell[]
-  onSave:        (next: Instructions) => Promise<void>
-  showToast:     (msg: string) => void
+  collapsed:        boolean
+  projectId:        string
+  projectName:      string
+  projectTables:    string[]
+  // 테이블 스코프 저장이 실제로 서버에 반영된 뒤(성공 응답의 새 updatedAt)에만
+  // "관계를 찾았습니다" 후보를 다시 신뢰할 수 있다 — App.tsx의 saveProjectFieldWithRetry
+  // 참고. projectTables만 의존하면 로컬 낙관적 갱신 시점(저장 전)에도 후보를 다시
+  // 불러와서, 그 요청이 서버 저장보다 먼저 도착하면 옛 테이블 기준 후보가 그대로
+  // 남는 경합이 있었다(2026-08-26 실측).
+  projectUpdatedAt: string
+  instructions:     Instructions
+  cells:            Cell[]
+  onSave:           (next: Instructions) => Promise<void>
+  showToast:        (msg: string) => void
 }
 
 type Tab = 'joins' | 'terms' | 'examples'
@@ -81,7 +86,7 @@ function isNoiseColumn(col: ColumnInfo, all: ColumnInfo[]): boolean {
 // 버전)도 써봤지만 "그냥 눌렀을 때만 뜨면 된다"는 피드백으로 되돌림 — 이제 탭 안엔
 // 물음표 아이콘 하나만 있고, 누를 때만 지침 패널 안(HintPopup)에 설명이 뜬다.
 const HINT_TEXT: Record<Tab, string> = {
-  joins: '테이블 두 개를 엮는 질문에서 AI가 틀린다면 연결을 알려주세요. "관계를 찾았습니다"에 뜬 건 Dataverse가 이미 아는 연결이라 눌러서 추가하면 되고(SQL을 몰라도 됩니다), 거기에 없는 특이한 경우만 "다이어그램에서 새 연결 만들기"를 눌러 그림으로 만드세요.',
+  joins: '테이블 두 개를 엮는 질문에서 AI가 틀린다면 연결을 알려주세요. 전부 Dataverse가 이미 아는 실제 연결(FK)만 보여드리니, SQL을 몰라도 목록에서 눌러서 추가하기만 하면 됩니다 — 직접 정의할 필요는 없어요.',
   terms: '컬럼 값(true/false 등)이 실제로 무슨 뜻인지 AI가 모를 때 알려주세요. 아래는 Dataverse에 설명이 없는 컬럼만 자동으로 골라 보여줍니다.',
   examples: 'AI 답변이 매번 다르거나 헤매면 대표 질문·답변 예시를 등록하세요. 답변은 지어내지 말고 노트북에서 실제로 물어봐서 나온 결과 그대로 넣으세요 — 아래 ✓ 버튼으로 실행된 셀을 가져오면 편합니다.',
 }
@@ -157,18 +162,23 @@ function TermQuickRow({ col, active, draft, onActivate, onChange, onAdd }: {
 }
 
 // 연결 한 줄 — 예전엔 줄마다 "설명 없으면 ＋설명 추가" 프롬프트를 항상 띄워서
-// 목록(특히 여러 개일 때)이 너무 길어 보인다는 피드백(2026-08-24)을 받았다. 설명
-// 입력은 다이어그램의 "관계 상세" 패널로 옮기고, 여기 목록은 값이 있을 때만 짧게
-// 보여주는 걸로 줄였다 — 없으면 그냥 표시할 게 없는 것뿐, 채우라고 조르지 않는다.
-function JoinRow({ join, fromLabel, toLabel, fromColLabel, onDelete }: {
+// 목록(특히 여러 개일 때)이 너무 길어 보인다는 피드백(2026-08-24)을 받았다. 값이
+// 있을 때만 짧게 보여주는 건 그대로 두되(없으면 그냥 표시할 게 없는 것), 설명
+// 입력칸은 다이어그램 제거(2026-08-26)로 갈 곳이 없어져서 이 행 안의 ✎ 아이콘으로
+// 옮겼다 — 눌러야만 입력칸이 뜨는 TermQuickRow와 같은 "평소엔 숨김" 패턴.
+function JoinRow({ join, fromLabel, toLabel, fromColLabel, onDelete, onSaveLabel }: {
   join: JoinDef; fromLabel: string; toLabel: string; fromColLabel: string
-  onDelete?: () => void   // 없으면(읽기 전용) 삭제 버튼 자체를 안 그린다
+  onDelete?: () => void      // 없으면(읽기 전용) 삭제 버튼 자체를 안 그린다
+  onSaveLabel?: (label: string) => void   // 없으면(읽기 전용) 설명 편집 자체를 안 그린다
 }) {
   // 같은 테이블을 가리키는 자기참조 연결(예: 거래처의 "상위 거래처")은 위 굵은
   // 줄이 "거래처 → 거래처"로 뭉개져서 무슨 관계인지 사라진다 — 그 경우만 연결고리
-  // 컬럼의 한국어 뜻을 굵은 줄에 같이 보여준다(RelationshipDiagram의 columnLabel과
-  // 같은 소스).
+  // 컬럼의 한국어 뜻을 굵은 줄에 같이 보여준다.
   const selfRef = fromLabel === toLabel && fromColLabel !== join.fromCol
+  const [editing, setEditing] = useState(false)
+  const [draft,   setDraft]   = useState(join.label ?? '')
+
+  const save = () => { onSaveLabel?.(draft.trim()); setEditing(false) }
 
   return (
     <div className="instr-join-row">
@@ -177,12 +187,35 @@ function JoinRow({ join, fromLabel, toLabel, fromColLabel, onDelete }: {
           <b>{fromLabel}</b> → <b>{toLabel}</b>
           {selfRef && <span className="instr-join-row-selfnote"> · {fromColLabel} 기준</span>}
         </span>
-        {onDelete && <button className="instr-row-del" title="삭제" onClick={onDelete}>×</button>}
+        <div className="instr-join-row-actions">
+          {onSaveLabel && !editing && (
+            <button
+              className="instr-row-edit" title="설명 추가/수정"
+              onClick={() => { setDraft(join.label ?? ''); setEditing(true) }}
+            >
+              ✎
+            </button>
+          )}
+          {onDelete && <button className="instr-row-del" title="삭제" onClick={onDelete}>×</button>}
+        </div>
       </div>
       <div className="instr-join-row-cols">
         .{join.fromCol} → .{join.toCol}
-        {join.label && <span className="instr-join-row-label"> · {join.label}</span>}
+        {!editing && join.label && <span className="instr-join-row-label"> · {join.label}</span>}
       </div>
+      {editing && (
+        <div className="instr-join-row-labelform">
+          <input
+            className="proj-new-input instr-select"
+            placeholder="설명 (예: 어느 거래처의 영업기회인지) — 없어도 됩니다"
+            value={draft}
+            autoFocus
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') save() }}
+          />
+          <button type="button" className="btn btn-sm primary" onClick={save}>저장</button>
+        </div>
+      )}
     </div>
   )
 }
@@ -195,7 +228,7 @@ function JoinRow({ join, fromLabel, toLabel, fromColLabel, onDelete }: {
 // 스스로 하는 게 아니라, App.tsx가 <InstructionsPanel key={activeProject.id} .../>로
 // 프로젝트 전환 시 강제로 새로 마운트시켜서다(NotebookView와 동일한 패턴) — 그래야
 // 아래 useState(instructions.*) 초기값이 새 프로젝트 것으로 다시 계산된다.
-export default function InstructionsPanel({ collapsed, projectId, projectName, projectTables, instructions, cells, onSave, showToast }: Props) {
+export default function InstructionsPanel({ collapsed, projectId, projectName, projectTables, projectUpdatedAt, instructions, cells, onSave, showToast }: Props) {
   const [tab, setTab] = useState<Tab>('joins')
   const [joins,    setJoins]    = useState<JoinDef[]>(instructions.joins)
   const [terms,    setTerms]    = useState<TermDef[]>(instructions.terms)
@@ -251,8 +284,8 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
   // "등록된 목록"과 "새로 추가하는 UI"가 한 화면에 뒤섞여 보여서 헷갈린다는 피드백
   // (2026-08-24) — 용어·예시 탭은 추가 UI를 접을 수 있는 섹션으로 분리한다. 처음 쓰는
   // 사람(아직 하나도 등록 안 함)에게는 기본으로 펼쳐서 바로 추가하게 안내하고,
-  // 이미 등록된 게 있으면 접어서 등록된 목록만 깔끔하게 보여준다. 조인 탭은 접고 펼
-  // 내용이 없어졌다(아래 참고 — 다이어그램 버튼 하나뿐이라 joinAddOpen이 필요 없음).
+  // 이미 등록된 게 있으면 접어서 등록된 목록만 깔끔하게 보여준다. 조인 탭도
+  // joinAddOpen으로 같은 패턴을 쓴다(아래 참고).
   const [termAddOpen,    setTermAddOpen]    = useState(() => terms.length === 0)
   const [exampleAddOpen, setExampleAddOpen] = useState(() => examples.length === 0)
 
@@ -307,8 +340,12 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
       .then(r => r.json())
       .then((d: { joins?: JoinDef[] }) => setJoinCandidates(d.joins ?? []))
       .catch(() => setJoinCandidates([]))
+    // projectUpdatedAt도 의존성에 둔다 — 테이블을 바꾼 직후(로컬 낙관적 갱신, 아직
+    // 서버 저장 전이라 옛 후보일 수 있음) 한 번 + 그 저장이 실제로 끝나
+    // updatedAt이 갱신된 뒤(서버가 최신 스코프로 다시 계산한 권위 있는 결과) 한 번,
+    // 이렇게 두 번 불러오게 해서 경합을 없앤다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, projectTables.join(',')])
+  }, [projectId, projectTables.join(','), projectUpdatedAt])
 
   // 후보 카드 클릭이나 다이어그램에서 만든 연결 — 위저드 없이 여기서 바로 만들어지므로 중복만 막는다.
   const addJoinIfNew = (join: JoinDef) => {
@@ -324,11 +361,23 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
     [joinCandidates, joins],
   )
 
-  // 자동 후보에 없는 특이 케이스는 다이어그램에서 직접 만든다. 원래 자유 배치형
-  // 캔버스(테이블 여러 개를 한 화면에 올려놓는 방식)였는데, 3~5개만 놓아도 선이
-  // 서로 꼬여서 "그래프가 이상하다"는 피드백(2026-08-24)으로 "테이블 A ↔ B" 한
-  // 쌍만 골라서 보는 방식으로 바꿨다 — 그래서 여기서 특정 테이블의 캔버스 배치를
-  // 뗄 일 자체가 없어져 removeTable류 로직도 필요 없어졌다(RelationshipDiagram 참고).
+  // 다이어그램(드래그앤드롭 캔버스, 최대 2테이블 제한)을 없앴다(2026-08-26) — 다시
+  // 보니 다이어그램이 위 자동 후보 대비 실제로 더 해주는 일이 없었다. 유일한 차이는
+  // 아무 Lookup 컬럼이나 캔버스에 놓인 아무 테이블에나 드래그해 "이 컬럼이 이
+  // 테이블을 가리킨다"고 실제 FK 여부와 무관하게 우길 수 있던 자유도인데, 이건
+  // 기능이라기보다 잘못된 관계를 등록하기 쉬운 허점에 가까웠다. 대신 같은 자동 후보
+  // 데이터를 테이블별로 묶어 펼쳐보는 목록으로 대체한다 — "용어 뜻" 탭의
+  // instr-term-group과 같은 모양이라 새로 배울 게 없다.
+  const joinCandidatesByTable = useMemo(() => {
+    const byTable = new Map<string, JoinDef[]>()
+    for (const c of joinCandidatesToShow) {
+      const list = byTable.get(c.fromTable)
+      if (list) list.push(c); else byTable.set(c.fromTable, [c])
+    }
+    // Map 삽입 순서 대신 projectTables(사이드바 트리와 같은 순서)를 그대로 따른다.
+    return projectTables.filter(t => byTable.has(t)).map(t => [t, byTable.get(t)!] as const)
+  }, [joinCandidatesToShow, projectTables])
+
   const activateTerm = (table: string, column: string) => setTermDraft({ table, column, term: '', def: '' })
   const addTerm = () => {
     if (!termDraft.table.trim() || !termDraft.column.trim() || !termDraft.term.trim() || !termDraft.def.trim()) return
@@ -384,13 +433,16 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
   )
 
   const totalCount = joins.length + terms.length + examples.length
-  const [diagramOpen, setDiagramOpen] = useState(false)
+  // 자동 후보를 보여주는 곳이 이제 이 섹션 하나뿐이라(2026-08-26 — "관계를 찾았습니다"를
+  // 따로 또 보여주는 게 헷갈린다는 피드백으로 통합), 용어·예시 탭과 같은 규칙을 그대로
+  // 적용한다: 아직 등록된 연결이 없으면 기본으로 펼쳐서 바로 보여준다.
+  const [joinAddOpen, setJoinAddOpen] = useState(() => joins.length === 0)
 
   const tableLabel = (name: string) => catalog.find(t => t.name === name)?.label ?? name
 
   // 컬럼 raw name(new_l_parentaccountid 등)만으론 뭘 가리키는지 알기 어려워서,
-  // describe 캐시의 한국어 설명(desc)을 찾아 라벨로 보여준다(RelationshipDiagram의
-  // columnLabel과 동일한 로직 — 자기참조 연결에서 JoinRow가 이걸로 구분한다).
+  // describe 캐시의 한국어 설명(desc)을 찾아 라벨로 보여준다 — 자기참조 연결에서
+  // JoinRow가 이걸로 구분한다.
   const columnLabel = (table: string, col: string): string => {
     const info = (columnsCache[table] ?? []).find(c => c.name === col)
     if (!info?.desc) return col
@@ -445,7 +497,11 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
               </div>
             )}
 
-            {/* 1) 등록된 연결 — 저장된 것만, 항상 맨 위. */}
+            {/* 등록된 연결 — 저장된 것만, 항상 맨 위. 자동 후보는 아래 "테이블에서 찾아
+                추가하기"(펼침 섹션) 한 곳에만 모아둔다 — 예전엔 이 목록 바로 아래
+                "관계를 찾았습니다"(항상 펼침)를 따로 또 뒀는데, 같은 데이터를 두
+                자리에서 보여주는 게 오히려 헷갈린다는 피드백(2026-08-26)으로 하나로
+                합쳤다. */}
             <div className="instr-section-title">
               등록된 연결{joins.length > 0 && <span className="instr-section-count">{joins.length}</span>}
             </div>
@@ -458,32 +514,9 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
                 toLabel={tableLabel(j.toTable)}
                 fromColLabel={columnLabel(j.fromTable, j.fromCol)}
                 onDelete={() => setJoins(prev => prev.filter((_, idx) => idx !== i))}
+                onSaveLabel={label => setJoins(prev => prev.map((jj, idx) => (idx === i ? { ...jj, label } : jj)))}
               />
             ))}
-
-            {/* 2) 관계를 찾았습니다 — SQL을 몰라도 눌러서 추가만 하면 되는 자동 후보라
-                등록된 목록과 확실히 구분되는 자기 섹션을 준다. 읽기 전용이면 추가할
-                방법이 없으니 후보 자체를 안 보여준다. */}
-            {joinCandidatesToShow.length > 0 && (
-              <div className="instr-section">
-                <div className="instr-section-title">
-                  🔎 관계를 찾았습니다
-                  <span className="instr-section-hint">눌러서 추가하세요 — 직접 설정할 필요 없어요</span>
-                </div>
-                {joinCandidatesToShow.map((c, i) => (
-                  <button
-                    type="button" key={`c-${i}`} className="instr-term-row-btn"
-                    title="Dataverse에 실제로 있는 관계(FK)에서 찾았습니다 — 클릭하면 추가됩니다"
-                    onClick={() => addJoinIfNew(c)}
-                  >
-                    <span className="instr-term-row-col">{tableLabel(c.fromTable)}.{c.fromCol}</span>
-                    <span className="instr-term-row-desc">→ {tableLabel(c.toTable)}</span>
-                    <span className="instr-term-row-plus">＋</span>
-                  </button>
-                ))}
-              </div>
-            )}
-
           </>
         )}
 
@@ -558,19 +591,50 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
           피드백(2026-08-24) — 스크롤되는 목록(.instr-panel-body) 밖, 저장 버튼
           바로 위에 항상 붙여둔다. 펼쳤을 때 내용이 길면(용어 탭의 테이블별 컬럼 등)
           이 영역 자체가 자기 스크롤을 가진다(.instr-add-pinned-body). */}
-      {/* 드롭다운 4개짜리 수동 입력 폼("①어느 테이블에서... ②...③...④...")이 그림으로
-          드래그해서 만드는 다이어그램보다 훨씬 불편하다는 피드백(2026-08-24) — 같은
-          일을 하는 두 가지 방법을 두는 대신, 자동 후보에 없는 연결은 전부 다이어그램
-          하나로 통일한다. 목록 쪽엔 이제 "새로 만들기" 버튼 하나만 남는다. */}
+      {/* 다이어그램(드래그앤드롭 캔버스) 제거(2026-08-26) — Dataverse 실제 FK 기반 자동
+          후보(joinCandidates)를 테이블별로 묶어 펼쳐보는 이 목록 하나로 통일했다.
+          예전엔 이 위에 "관계를 찾았습니다"(항상 펼침, 같은 데이터의 평평한 목록)를
+          따로 또 뒀는데, 같은 걸 두 자리에서 보여주는 게 오히려 헷갈린다는
+          피드백(2026-08-26)으로 없앴다. "용어 뜻" 탭의
+          instr-term-browser/instr-term-group과 같은 패턴이라 새로 배울 게 없다. */}
       {tab === 'joins' && projectTables.length > 0 && (
         <div className="instr-add-pinned">
-          <button
-            type="button" className="instr-add-toggle"
-            onClick={() => { for (const t of projectTables) ensureColumns(t); setDiagramOpen(true) }}
-          >
-            <span>🗺 다이어그램에서 새 연결 만들기</span>
-            <span className="instr-add-toggle-arrow">↗</span>
+          <button type="button" className="instr-add-toggle" onClick={() => setJoinAddOpen(o => !o)}>
+            <span>➕ 테이블에서 찾아 추가하기</span>
+            <span className="instr-add-toggle-arrow">{joinAddOpen ? '▾' : '▸'}</span>
           </button>
+          {joinAddOpen && (
+            <div className="instr-add-pinned-body">
+              <div className="instr-field-label">
+                Dataverse에 실제로 있는 관계(FK)만 보여드립니다 — 눌러서 추가하세요, 직접 설정할 필요 없어요
+              </div>
+              <div className="instr-term-browser">
+                {joinCandidatesByTable.length === 0 ? (
+                  <div className="instr-hint" style={{ padding: '0 0 4px' }}>
+                    더 찾을 연결이 없습니다 — 등록되지 않은 실제 관계(FK)가 이 프로젝트
+                    테이블 사이에 없습니다.
+                  </div>
+                ) : joinCandidatesByTable.map(([table, candidates]) => (
+                  <div className="instr-term-group" key={table}>
+                    <div className="instr-term-group-hdr">{tableLabel(table)}</div>
+                    {candidates.map((c, i) => (
+                      <button
+                        type="button" key={i} className="instr-term-row-btn"
+                        title="Dataverse에 실제로 있는 관계(FK)에서 찾았습니다 — 클릭하면 추가됩니다"
+                        onClick={() => addJoinIfNew(c)}
+                      >
+                        <span className="instr-term-row-col">.{c.fromCol}</span>
+                        <span className="instr-term-row-desc">
+                          → {c.fromTable === c.toTable ? '같은 테이블(자기참조)' : tableLabel(c.toTable)}
+                        </span>
+                        <span className="instr-term-row-plus">＋</span>
+                      </button>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -695,23 +759,6 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
         <div className="h-spacer" />
         <button className="btn primary" onClick={handleSave} disabled={saving}>{saving ? '저장 중…' : '저장'}</button>
       </div>
-
-      {diagramOpen && (
-        <RelationshipDiagram
-          projectName={projectName}
-          projectTables={projectTables}
-          joins={joins}
-          joinCandidates={joinCandidates}
-          columnsByTable={columnsCache}
-          tableLabel={tableLabel}
-          onAddJoin={addJoinIfNew}
-          onDeleteJoin={join => setJoins(prev => prev.filter(j => joinKey(j) !== joinKey(join)))}
-          onSaveJoinLabel={(join, label) => setJoins(prev => prev.map(j => (joinKey(j) === joinKey(join) ? { ...j, label } : j)))}
-          onClose={() => setDiagramOpen(false)}
-          onSave={handleSave}
-          saving={saving}
-        />
-      )}
     </div>
   )
 }

@@ -17,6 +17,7 @@ from fastapi import FastAPI
 
 from backend import chat_api
 from backend.core.semaphore import Semaphore
+from backend.stores.local_file_store import LocalFileStore
 
 
 def _assistant_done(text: str) -> dict[str, Any]:
@@ -195,10 +196,11 @@ class ChatRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.root = Path.cwd() / "data" / ".python-tests" / str(uuid.uuid4())
         self.root.mkdir(parents=True)
-        self.schema_file = self.root / "schema.json"
-        self.schema_file.write_text(
-            json.dumps(
-                {
+        self.store = LocalFileStore(root=self.root)
+        self.store.put(
+            chat_api.SCHEMA_COLLECTION, chat_api.SCHEMA_KEY,
+            {
+                "tables": {
                     "account": {
                         "label": "고객",
                         "domain": "영업",
@@ -206,9 +208,7 @@ class ChatRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         "schema": "| 컬럼명 | 타입 | 설명 |\n|---|---|---|\n| name | String | 이름 |",
                     }
                 },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
+            },
         )
         self.provider: Any = _ToolLoopProvider()
         self.saved_histories: list[list[dict[str, Any]]] = []
@@ -227,7 +227,7 @@ class ChatRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.log_info = Mock()
         self.log_error = Mock()
         self.patches = [
-            patch.object(chat_api, "SCHEMA_FILE", self.schema_file),
+            patch.object(chat_api, "get_store", lambda: self.store),
             patch.object(chat_api, "_provider", side_effect=lambda: self.provider),
             patch.object(chat_api, "dataverse_env_missing", return_value=None),
             patch.object(chat_api, "dataverse_get", self.dataverse_get),

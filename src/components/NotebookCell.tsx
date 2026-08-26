@@ -83,6 +83,7 @@ export default function NotebookCell({ cell, onRun, onDelete, onTextChange, onEx
           onKeyDown={handleKey}
           placeholder="자연어로 질문하세요 (예: 고객 TOP 5 보여줘)"
           rows={2}
+          spellCheck={false}
         />
       </div>
 

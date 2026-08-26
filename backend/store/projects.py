@@ -1,4 +1,4 @@
-"""프로젝트 영속화 — v1: 전부 개인 프로젝트, data/users/<이메일>/projects/<id>.json.
+"""프로젝트 영속화 — v1: 전부 개인 프로젝트, DocumentStore의 "users/<이메일>/projects" 컬렉션.
 
 ★ v2(부서·관리자 공유 프로젝트, 소유자 전용 편집, 읽기전용 공유 등)는 잠시
 보류했다 — 그 코드는 전부 `v2-department-access-control` 브랜치에 그대로
@@ -22,44 +22,43 @@
 
 data/ 전체가 .gitignore 대상이라 별도 조치 없이 커밋에서 제외된다.
 
+★ 실제 저장은 이 파일이 직접 하지 않는다(2026-08-26부터) — `backend/stores`의
+DocumentStore(기본 구현: LocalFileStore, 로컬 JSON 파일)에 위임한다. 이 파일이 아는 건
+"이메일·id 문자열 넣으면 dict 나온다"는 계약뿐이고, 호출부(main.py/chat_api.py)도 이
+계약만 안다 — 파일 경로나 JSON 형식은 전혀 모른다. 그래서 나중에 실제 서버(온프레미스
+DB, Azure Table Storage 등)로 옮길 때는 `backend/stores/factory.py`에 그 구현체를
+추가하기만 하면 되고, 이 파일도 호출부도 고칠 필요가 없다. 각 프로젝트 문서는 store가
+관리하는 `_rev`(정수 버전) 필드를 갖게 되는데, 지금은 아무도 강제하지 않고(update_project의
+expected_rev 기본값 None = 무조건 덮어쓰기, 지금까지와 동일한 동작) 나중에 "다른 탭/기기에서
+먼저 저장한 내용을 덮어쓰지 않게" 강제하고 싶을 때 그 값을 쓸 수 있도록 미리 흘려보내 둔다.
+
 동기 파일 I/O만 사용한다 — TS 버전이 "async를 쓰지 않아 이벤트 루프 한 틱 안에서
 끊기지 않는다"는 성질에 기댄 것과 마찬가지로, 이 모듈의 함수들은 FastAPI 라우트에서
 스레드풀로 오프로딩되지 않는 한 그대로 두면 된다(각 함수 자체가 짧고 원자적).
-
-★ 나중에 "로컬 파일 → 공용 서버/DB"로 옮기는 방법(2026-08-25): 지금 로컬 파일에
-직접 손대는 곳은 밑줄로 시작하는 함수들뿐이다 — USERS_ROOT, _personal_dir,
-_file_path, _read_project, _write_project. 그 아래 밑줄 없는 함수들(list_projects/
-get_project/create_project/update_project/delete_project/save_project_history 등)은
-전부 "이메일·id 문자열 넣으면 dict 나온다" 식의 평범한 계약만 쓰고, 호출부
-(main.py/chat_api.py)도 이 계약만 안다 — 파일 경로나 JSON 형식은 전혀 모른다.
-그래서 나중에 실제 서버(원격 DB, model 쪽 공용 서버 등)로 옮길 때도 이 파일 안의
-밑줄 함수들만 그 서버 호출로 바꿔치면 되고, 호출부는 한 줄도 안 고쳐도 된다.
 """
 from __future__ import annotations
 
-import json
-import os
 import re
 import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from ..core.logger import log
-
-# 개인 프로젝트 루트 — data/users/<이메일 폴더명>/projects/<id>.json. data/users.json
-# (로그인 허용 명단 파일)과 이름이 비슷해 보이지만 전혀 다른 경로다(파일 vs 폴더).
-USERS_ROOT = Path.cwd() / "data" / "users"
+from ..stores.base import VersionConflict
+from ..stores.factory import get_store
 
 _EMPTY_INSTRUCTIONS: dict[str, Any] = {"joins": [], "terms": [], "examples": []}
 
 # UUID 형태만 허용 — 경로 탈출(예: "../../etc") 방지
 _ID_RE = re.compile(r"^[a-zA-Z0-9-]+$")
 
-# 이메일을 폴더명으로 쓸 때 위험한 문자(경로 구분자 등)를 치환 — 로그인 이메일은
-# 이미 검증된 값이라 실제로 걸릴 일은 거의 없지만 방어적으로 둔다.
+# 이메일을 collection 경로 세그먼트로 쓸 때 위험한 문자(경로 구분자 등)를 치환 — 로그인
+# 이메일은 이미 검증된 값이라 실제로 걸릴 일은 거의 없지만 방어적으로 둔다.
 _EMAIL_UNSAFE_RE = re.compile(r"[^a-zA-Z0-9@_.-]")
+
+# VersionConflict를 그대로 재노출 — 호출부가 backend.stores를 직접 몰라도 되게 한다.
+ProjectVersionConflict = VersionConflict
 
 
 def _now_iso() -> str:
@@ -81,26 +80,13 @@ def _copy_instructions(value: Any) -> dict[str, Any]:
     }
 
 
-def _personal_dir(email: str) -> Path:
+def _collection(email: str) -> str:
     safe = _EMAIL_UNSAFE_RE.sub("_", email.strip().lower()) or "unknown"
-    d = USERS_ROOT / safe / "projects"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _file_path(email: str, project_id: str) -> Path:
-    """검증된 경로만 반환하고 경로 탈출도 거부한다."""
-    if not isinstance(project_id, str) or not _ID_RE.fullmatch(project_id):
-        raise ValueError("유효하지 않은 프로젝트 ID입니다.")
-    root = _personal_dir(email).resolve()
-    path = (root / f"{project_id}.json").resolve()
-    if path.parent != root:
-        raise ValueError("프로젝트 경로가 저장 디렉터리를 벗어났습니다.")
-    return path
+    return f"users/{safe}/projects"
 
 
 def _is_project_shape(value: Any, expected_id: str) -> bool:
-    """파일을 API 객체로 사용하기 전에 필수 루트 구조를 검증한다."""
+    """저장소에서 읽은 값을 API 객체로 사용하기 전에 필수 루트 구조를 검증한다."""
     if not isinstance(value, dict):
         return False
     if value.get("id") != expected_id or not isinstance(value.get("name"), str):
@@ -124,43 +110,24 @@ def _read_project(email: str, project_id: str) -> dict[str, Any] | None:
     if not email or not isinstance(project_id, str) or not _ID_RE.fullmatch(project_id):
         return None
     try:
-        path = _file_path(email, project_id)
-        if not path.exists():
-            return None
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError):
+        value = get_store().get(_collection(email), project_id)
+    except ValueError:
+        return None
+    if value is None:
         return None
     if not _is_project_shape(value, project_id):
-        log.error("PROJECT", f"손상된 프로젝트 파일 무시: {project_id}.json")
+        log.error("PROJECT", f"손상된 프로젝트 문서 무시: {project_id}")
         return None
     return deepcopy(value)
 
 
-def _write_project(email: str, p: dict[str, Any]) -> None:
+def _write_project(email: str, p: dict[str, Any], *, expected_rev: int | None = None) -> dict[str, Any]:
     project_id = p.get("id")
     if not isinstance(project_id, str) or not _ID_RE.fullmatch(project_id):
         raise ValueError("유효하지 않은 프로젝트 ID입니다.")
     if not _is_project_shape(p, project_id):
         raise ValueError("프로젝트 데이터 형식이 올바르지 않습니다.")
-
-    target = _file_path(email, project_id)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    if temporary.parent.resolve() != target.parent.resolve():
-        raise ValueError("임시 프로젝트 경로가 저장 디렉터리를 벗어났습니다.")
-
-    payload = json.dumps(p, ensure_ascii=False, indent=2)
-    try:
-        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, target)
-    finally:
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
+    return get_store().put(_collection(email), project_id, p, expected_rev=expected_rev)
 
 
 def _to_summary(p: dict[str, Any]) -> dict[str, Any]:
@@ -181,13 +148,13 @@ def list_projects(viewer_email: str | None) -> list[dict[str, Any]]:
     if not viewer_email:
         return []
     try:
-        ids = [f.stem for f in _personal_dir(viewer_email).iterdir() if f.suffix == ".json"]
-    except OSError:
+        ids = get_store().list_keys(_collection(viewer_email))
+    except ValueError:
         return []
     projects = [p for p in (_read_project(viewer_email, pid) for pid in ids) if p is not None]
 
     # 이전 세대(부서 공유 시절) 프로젝트엔 order 필드가 없다 — 하나라도 있으면
-    # 최근 사용순으로 한 번만 order를 매겨 파일에 자가 치유(self-heal)한다.
+    # 최근 사용순으로 한 번만 order를 매겨 문서를 자가 치유(self-heal)한다.
     if any("order" not in p for p in projects):
         projects.sort(key=lambda p: p["updatedAt"], reverse=True)
         for index, p in enumerate(projects):
@@ -223,8 +190,8 @@ def create_project(viewer_email: str, name: str, tables: list[str] | None = None
     project_id = str(uuid.uuid4())
     now = _now_iso()
     try:
-        existing_count = sum(1 for _ in _personal_dir(viewer_email).glob("*.json"))
-    except OSError:
+        existing_count = len(get_store().list_keys(_collection(viewer_email)))
+    except ValueError:
         existing_count = 0
     p = {
         "id": project_id,
@@ -238,7 +205,7 @@ def create_project(viewer_email: str, name: str, tables: list[str] | None = None
         "order": existing_count,   # 목록 맨 아래에 추가 — 위/아래 버튼으로 옮긴 순서만 이후 유지
         "ownerEmail": viewer_email,
     }
-    _write_project(viewer_email, p)
+    p = _write_project(viewer_email, p)
     log.info("PROJECT", f'생성: "{p["name"]}" ({project_id}), 소유자: {viewer_email}')
     return _to_detail(p)
 
@@ -246,7 +213,10 @@ def create_project(viewer_email: str, name: str, tables: list[str] | None = None
 def update_project(
     viewer_email: str, project_id: str, *, name: str | None = None, tables: list[str] | None = None,
     instructions: dict[str, Any] | None = None, cells: list[Any] | None = None,
+    expected_rev: int | None = None,
 ) -> dict[str, Any] | None:
+    """expected_rev를 주면(지금은 아무 호출부도 안 준다 — 준비만 해둔 상태) 그 사이 다른
+    곳에서 먼저 저장된 문서를 조용히 덮어쓰지 않고 ProjectVersionConflict를 던진다."""
     p = _read_project(viewer_email, project_id)
     if p is None:
         return None
@@ -259,7 +229,7 @@ def update_project(
     if cells is not None:
         p["cells"] = deepcopy(cells)
     p["updatedAt"] = _now_iso()
-    _write_project(viewer_email, p)
+    p = _write_project(viewer_email, p, expected_rev=expected_rev)
     return _to_detail(p)
 
 
@@ -267,12 +237,10 @@ def delete_project(viewer_email: str, project_id: str) -> bool:
     p = _read_project(viewer_email, project_id)
     if p is None:
         return False
-    try:
-        _file_path(viewer_email, project_id).unlink()
+    if get_store().delete(_collection(viewer_email), project_id):
         log.info("PROJECT", f"삭제: {project_id}")
         return True
-    except OSError:
-        return False
+    return False
 
 
 # ─── 채팅 히스토리(LLM 컨텍스트) — chat_api.py 전용, /api/projects 응답에는 절대 포함하지 않음 ──

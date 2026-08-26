@@ -15,6 +15,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend.store import projects
+from backend.stores import local_file_store
+from backend.stores.local_file_store import LocalFileStore
 
 EMAIL = "test@example.com"
 
@@ -26,9 +28,10 @@ class ProjectStoreContractTests(unittest.TestCase):
         self.root = Path.cwd() / "data" / ".python-tests" / str(uuid.uuid4())
         self.users_root = self.root / "data" / "users"
         self.projects_dir = self.users_root / EMAIL / "projects"
+        self._store = LocalFileStore(root=self.root / "data")
 
         self._patches = [
-            patch.object(projects, "USERS_ROOT", self.users_root),
+            patch.object(projects, "get_store", lambda: self._store),
             patch.object(projects.log, "info"),
             patch.object(projects.log, "error"),
         ]
@@ -158,13 +161,46 @@ class ProjectStoreContractTests(unittest.TestCase):
         target = self.projects_dir / f"{created['id']}.json"
         original = target.read_bytes()
 
-        with patch.object(projects.os, "replace", side_effect=OSError("replace failed")):
+        with patch.object(local_file_store.os, "replace", side_effect=OSError("replace failed")):
             with self.assertRaises(OSError):
                 projects.update_project(EMAIL, created["id"], name="변경본")
 
         self.assertEqual(target.read_bytes(), original)
         self.assertEqual(list(self.projects_dir.glob("*.tmp")), [])
         self.assertEqual(projects.get_project(EMAIL, created["id"])["name"], "원본")
+
+    def test_stale_expected_rev_is_rejected_as_version_conflict(self) -> None:
+        """두 탭이 같은 프로젝트를 동시에 고치는 상황의 핵심 계약: 먼저 읽은 _rev로
+        나중에 저장하려 하면(그 사이 다른 곳에서 이미 한 번 저장했으므로) 조용히
+        덮어쓰지 않고 ProjectVersionConflict를 던져야 한다."""
+        created = projects.create_project(EMAIL, "원본", ["account"])
+        project_id = created["id"]
+        stale_rev = created["_rev"]
+
+        # 다른 탭이 먼저 저장 — _rev가 하나 올라간다.
+        projects.update_project(EMAIL, project_id, name="다른 탭이 바꿈")
+
+        with self.assertRaises(projects.ProjectVersionConflict):
+            projects.update_project(EMAIL, project_id, name="내 탭이 덮어쓰려 함", expected_rev=stale_rev)
+        # 거절됐으니 다른 탭의 변경이 그대로 남아있어야 한다.
+        self.assertEqual(projects.get_project(EMAIL, project_id)["name"], "다른 탭이 바꿈")
+
+        # 최신 _rev로 다시 시도하면 성공한다(충돌 후 새로고침 → 재시도 흐름).
+        latest_rev = projects.get_project(EMAIL, project_id)["_rev"]
+        updated = projects.update_project(EMAIL, project_id, name="재시도 성공", expected_rev=latest_rev)
+        assert updated is not None
+        self.assertEqual(updated["name"], "재시도 성공")
+        self.assertGreater(updated["_rev"], latest_rev)
+
+    def test_expected_rev_none_always_overwrites_like_before(self) -> None:
+        """expected_rev를 안 주면(지금 대부분의 호출부) 예전처럼 무조건 덮어쓴다 —
+        기존 동작을 깨지 않는다는 걸 명시적으로 잡아둔다."""
+        created = projects.create_project(EMAIL, "원본", ["account"])
+        project_id = created["id"]
+        projects.update_project(EMAIL, project_id, name="변경 1")
+        updated = projects.update_project(EMAIL, project_id, name="변경 2", expected_rev=None)
+        assert updated is not None
+        self.assertEqual(updated["name"], "변경 2")
 
     def test_inputs_and_return_values_are_deep_copied(self) -> None:
         tables = ["account"]

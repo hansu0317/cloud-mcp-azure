@@ -90,6 +90,10 @@ export interface ProjectDetail {
   updatedAt:     string
   order:         number
   ownerEmail?:   string | null
+  // 동시수정 감지용 버전(backend/stores의 DocumentStore가 매길 관리). 저장할 때
+  // 그대로 되돌려보내면 서버가 그 사이 다른 곳에서 먼저 저장된 걸 알고 거절할 수
+  // 있다(App.tsx의 저장 큐 참고). 오래된 캐시 호환을 위해 optional로 둔다.
+  _rev?: number
 }
 
 export interface QueryLog {
