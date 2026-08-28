@@ -148,12 +148,31 @@ _TOP_RE = re.compile(r"(^|&)\$top=([^&]*)", re.IGNORECASE)
 _APPLY_RE = re.compile(r"(^|&)\$apply=", re.IGNORECASE)
 _BLOCKED_SEGMENT_RE = re.compile(r"\$(?:batch|ref|value)\b", re.IGNORECASE)
 _ABSOLUTE_RE = re.compile(r"^(?:[a-z][a-z0-9+.-]*:)?//", re.IGNORECASE)
+# 모델(특히 로컬 모델)이 옛 CRM(OData v2/v3) 습관대로 datetime'...' 리터럴을
+# $filter에 그대로 쓰는 경우가 실측됐다(2026-08-27, new_dayoffs 2026년 필터 조회가
+# 전부 이 리터럴 때문에 Dataverse에서 400을 반환했는데, 모델이 그 오류를 삼키고
+# "2026년 데이터가 없다"고 잘못 답함 — 실제로는 있었음). Dataverse Web API(OData v4)는
+# 따옴표 없는 순수 ISO 8601만 받으므로, 모델이 뭐라고 보내든 여기서 한 번 더 벗겨서
+# 보정한다 — 프롬프트 지시만 믿지 않는 서버 쪽 방어선.
+_LEGACY_DATETIME_LITERAL_RE = re.compile(r"datetime(?:offset)?'([^']*)'", re.IGNORECASE)
 _ODATA_TEXT_FALLBACK_RE = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*\?\$(?:select|filter|top|orderby|count|apply)=",
     re.IGNORECASE,
 )
-MAX_TOOL_OUTPUT_BYTES = 8 * 1024
+# 2026-08-28 실측: new_dayoffs 22행을 $select 6개 컬럼(+Dataverse가 자동으로 붙이는
+# FormattedValue 주석)만으로 조회해도 11.76 KB — 기존 8 KiB 상한에서 22행 중 16행만
+# (심지어 무필터 조회는 3행만) 남고 잘렸다. 이게 "안희태 등 일부만 나온다"는 증상의
+# 실제 원인이었다(실 데이터는 다 있었는데 도구 응답 자체가 여기서 잘려나감). 100행 ×
+# 수백 바이트/행을 감당할 수 있게 4배로 올린다 — 행 개수 상한은 여전히
+# MAX_DATAVERSE_ROWS가 별도로 잡아준다.
+MAX_TOOL_OUTPUT_BYTES = 32 * 1024
 MAX_DATAVERSE_ROWS = 100
+# 모델이 $top을 안 쓰면(=몇 건 원하는지 스스로 정하지 않으면) 지금까지는 곧바로
+# MAX_DATAVERSE_ROWS(100)까지 채워서 줬는데, 그러면 컬럼이 조금만 넓어도 위
+# MAX_TOOL_OUTPUT_BYTES에 걸려 다시 잘리고(2026-08-28 실측), 채팅 UI에 100행짜리
+# 표는 사람이 읽지도 않는다. "말 안 하면 최대치"보다 "말 안 하면 가벼운 기본값,
+# 필요하면 모델이 $top을 직접 키움"이 소·중소기업 규모 데이터에 맞다.
+DEFAULT_DATAVERSE_TOP = 25
 
 
 def _allowed_entity_sets(tables: list[str]) -> set[str]:
@@ -218,6 +237,7 @@ def _guard_odata_path(rel_path: str, tables: list[str]) -> str:
     query_index = clean.find("?")
     resource = clean if query_index < 0 else clean[:query_index]
     query = "" if query_index < 0 else clean[query_index + 1 :]
+    query = _LEGACY_DATETIME_LITERAL_RE.sub(r"\1", query)
     is_collection = "(" not in resource and "$count" not in resource.lower()
 
     top_match = _TOP_RE.search(query)
@@ -229,8 +249,10 @@ def _guard_odata_path(rel_path: str, tables: list[str]) -> str:
     elif is_collection and not _APPLY_RE.search(query):
         # `$count=true`는 collection 메타데이터를 함께 반환할 뿐 행 조회이므로
         # 기본 상한을 생략하지 않는다. 반면 `entity/$count`는 scalar resource라
-        # is_collection=False이고 그대로 유지된다.
-        return f"{resource}?{query + '&' if query else ''}$top=100"
+        # is_collection=False이고 그대로 유지된다. 모델이 개수를 직접 정하지 않았을
+        # 땐 MAX_DATAVERSE_ROWS가 아니라 더 가벼운 DEFAULT_DATAVERSE_TOP을 쓴다 —
+        # 더 필요하면 모델이 $top을 명시해서 MAX_DATAVERSE_ROWS까지 직접 늘리면 된다.
+        return f"{resource}?{query + '&' if query else ''}$top={DEFAULT_DATAVERSE_TOP}"
     return resource if query_index < 0 else f"{resource}?{query}"
 
 
@@ -256,6 +278,11 @@ def _bounded_json(value: Any) -> str:
                 "_truncated": True,
                 "_returnedRows": count,
                 "_availableRows": len(value),
+                "_hint": (
+                    f"전체 {len(value)}행 중 {count}행만 반환됐습니다(응답 크기 상한). "
+                    "이 결과만으로 답하면 안 됩니다 — $select로 필요한 컬럼만 좁히거나"
+                    " $filter로 조건을 좁혀 dataverse_query를 다시 호출하세요."
+                ),
             }
             candidate_bytes = _encoded_json(candidate)
             if len(candidate_bytes) <= MAX_TOOL_OUTPUT_BYTES:
@@ -482,10 +509,20 @@ def _build_system_prompt(tables: list[str], instructions: dict[str, Any]) -> str
         "path는 테이블명이 아니라 카탈로그 각 줄 맨 앞의 엔티티집합명으로 시작해야 합니다 —"
         " 예를 들어 테이블명이 new_project여도 path는 new_project가 아니라"
         " 엔티티집합명 new_projects(끝의 s를 빠뜨리지 말 것)로 시작해야 합니다.",
+        "반대로 dataverse_describe_table의 table 인자는 엔티티집합명이 아니라"
+        " 카탈로그의 테이블 논리명(엔티티집합명에서 끝의 s를 뺀 이름)이어야 합니다 —"
+        " new_projects가 아니라 new_project를 넘기세요. 두 도구의 인자 규칙이 서로"
+        " 반대라는 점을 헷갈리지 마세요.",
+        "날짜 필터에는 datetime'2026-01-01T00:00:00Z' 같은 구식 리터럴을 쓰지 말고,"
+        " 따옴표 없는 ISO 8601(예: new_dt_start ge 2026-01-01T00:00:00Z)만 사용하세요.",
         "상태 필터가 필요하면 $filter=statecode eq 0 (활성)을 사용하세요.",
         "Choice 컬럼은 describe 결과의 숫자 옵션 코드를 사용하세요.",
         "도구가 스코프 밖이라고 거절하면 그 이름이 잘못된 것입니다 — 포기하고 답을 지어내지 말고,"
         " [테이블 카탈로그]에 있는 이름 중에서 다시 골라 재시도하세요.",
+        "dataverse_query 결과에 \"_truncated\": true가 있으면 응답 크기 제한 때문에"
+        " 일부 행만 온 것입니다(누락이 아니라 잘림) — 그 일부만으로 답하지 말고,"
+        " $select로 필요한 컬럼만 좁히거나 $filter로 조건을 좁혀 dataverse_query를"
+        " 다시 호출해서 전체 결과를 근거로 답하세요.",
     ])
     lines.extend(_instruction_prompt(instructions))
     lines.extend(["", "[테이블 카탈로그]", catalog or "(등록된 테이블이 없습니다)"])
