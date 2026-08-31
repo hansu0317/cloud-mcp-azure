@@ -225,13 +225,13 @@
   .ft-group-title span{ color:var(--ink-faint); font-weight:400; font-size:.78rem; }
   .ft-row{
     display:grid;
-    grid-template-columns:210px 1fr;
+    grid-template-columns:minmax(220px, 300px) 1fr;
     gap:14px;
     padding:5px 0;
     font-size:.84rem;
     align-items:baseline;
   }
-  .ft-row code{ color:var(--stamp); font-size:.82rem; }
+  .ft-row code{ color:var(--stamp); font-size:.82rem; white-space:nowrap; }
   .ft-row span{ color:var(--ink-soft); }
 
   /* ── API 스펙 테이블 ───────────────────────────────────────── */
@@ -538,7 +538,7 @@
       <h2>흐름 — 로그인부터 노트북 진입까지</h2>
     </div>
     <div class="sheet-body">
-      <p class="sheet-note">Microsoft 인증 자체가 성공해도 <code>data/users.json</code> 화이트리스트에 없으면 세션을 만들지 않는다(2026-08-25, "등록 안 된 사람은 접근 자체를 막아라") — RBAC이 아니라 화이트리스트 게이트다.</p>
+      <p class="sheet-note">Microsoft 인증 자체가 성공해도 <code>data/users.json</code> 화이트리스트에 없으면 세션을 만들지 않는다 — 등록 안 된 사람은 접근 자체를 막는 화이트리스트 게이트이지, 세분화된 RBAC은 아니다.</p>
       <div class="diagram-wrap">
         <figure>
           <svg viewBox="0 0 900 340" role="img" aria-label="로그인 버튼 클릭이 Microsoft 로그인 화면과 콜백 검증을 거쳐, 화이트리스트에 없으면 거부되고 있으면 세션 쿠키를 발급받아 SPA의 auth me 확인으로 이어지는 흐름도">
@@ -651,7 +651,7 @@
             <rect class="box-quiet" x="325" y="566" width="300" height="46" rx="4"/>
             <text class="lbl-sub" x="475" y="594" text-anchor="middle">노트북 셀에 답변·쿼리 로그 표시</text>
           </svg>
-          <figcaption>2026-08-28 실측: 8 KiB 상한에서 실제 22행이 절반 넘게 잘려 "일부 사용자만 나온다"는 증상이 났다 — 32 KiB로 확대하고, <code>$top</code> 기본값도 100→25로 낮춰 표가 안 잘리면서도 안 커지게 균형을 맞췄다(<code>chat_api.py</code>, 커밋 <code>983e3a3</code>).</figcaption>
+          <figcaption>도구 결과 바이트 상한(32 KiB)과 <code>$top</code> 기본값(25)은 "표가 잘리지도, 채팅 UI에서 못 읽을 만큼 커지지도 않는" 균형점으로 튜닝된 값이다 — 컬럼이 조금만 넓어도 100행 기본 채움이 상한에 걸려 다시 잘리는 게 실제 문제였다(<code>chat_api.py</code>).</figcaption>
         </figure>
       </div>
     </div>
@@ -666,7 +666,7 @@
       <h2>지침 구조 — 조인·용어·예시가 답변에 반영되는 경로</h2>
     </div>
     <div class="sheet-body">
-      <p class="sheet-note">"지침"은 AI를 다시 학습시키는 게 아니라, 매 질문의 시스템 프롬프트에 자동으로 끼워 넣는 메모다. 세 탭 모두 각자 자기 프로젝트 범위의 후보만 보여주고, 전역 로그 기반 "초안 생성"은 2026-08-21에 없앴다.</p>
+      <p class="sheet-note">"지침"은 AI를 다시 학습시키는 게 아니라, 매 질문의 시스템 프롬프트에 자동으로 끼워 넣는 메모다. 세 탭 모두 로그를 훑어 한 번에 채우는 전역 기능 없이, 각자 자기 프로젝트 범위의 후보만 보여준다.</p>
       <div class="diagram-wrap">
         <figure>
           <svg viewBox="0 0 900 380" role="img" aria-label="지침 패널의 테이블 연결·용어 뜻·질문 예시 세 탭이 프로젝트 저장에 합쳐지고, 매 질문마다 시스템 프롬프트의 세 섹션으로 삽입되어 LLM에 전달되는 구조도">
@@ -720,15 +720,15 @@
   </section>
 
   <!-- ══════════════════════════════════════════════════════════
-       SHEET 07 — 정지 버튼 + 좀비 로딩 셀 복구 (2026-08-31)
+       SHEET 07 — 정지 버튼 + 좀비 로딩 셀 복구
        ══════════════════════════════════════════════════════════ -->
   <section class="sheet" id="sheet-07">
     <div class="sheet-head">
       <span class="sheet-num">SHEET 07</span>
-      <h2>흐름 — 정지 버튼과 좀비 로딩 셀 복구 (2026-08-31)</h2>
+      <h2>흐름 — 정지 버튼과 좀비 로딩 셀 복구</h2>
     </div>
     <div class="sheet-body">
-      <p class="sheet-note">"질문 보내고 계속 도는데 안 끝난다"는 실사용 신고에서 나온 당일 수정 두 건. 서버 쪽 정리 로직(<code>chat_api.py</code>)은 이미 있었고, 없던 건 프론트가 실제로 끊는 배선이었다.</p>
+      <p class="sheet-note">"질문 보내고 계속 도는데 안 끝난다"는 신고를 해결한 두 가지 안전장치. 서버 쪽 정리 로직(<code>chat_api.py</code>)은 이미 있었고, 없던 건 프론트가 실제로 끊는 배선이었다.</p>
 
       <div class="diagram-wrap">
         <figure>
@@ -753,7 +753,7 @@
             <text class="stamp-text" x="216" y="264" text-anchor="middle" font-weight="700">✕ 로딩 스피너가 영원히 안 풀림</text>
 
             <rect class="box-quiet" x="464" y="16" width="400" height="268" rx="6"/>
-            <text class="lbl-sub" x="664" y="36" text-anchor="middle">AFTER (2026-08-31)</text>
+            <text class="lbl-sub" x="664" y="36" text-anchor="middle">AFTER</text>
 
             <rect class="box" x="504" y="56" width="320" height="50" rx="4"/>
             <text class="lbl" x="664" y="86" text-anchor="middle">마운트 시 loading:true 셀 스캔</text>
@@ -845,7 +845,7 @@
             <text class="lbl" x="662" y="156" text-anchor="middle">OllamaProvider</text>
             <text class="lbl-sub" x="662" y="174" text-anchor="middle">LOCAL_LLM_BASE_URL · qwen3 등</text>
           </svg>
-          <figcaption style="color:var(--stamp); border-color:var(--stamp-line)">⚠ 2026-08-31 실측: Colab에 임시로 띄운 Ollama용 cloudflared 터널이 죽은 채로 서버가 35분간 그 프로필로 서비스됐다 — <code>.env</code>를 되돌려도 재시작 전까진 반영 안 됨을 몸으로 확인. 지금은 <code>scripts\server.ps1 restart</code>로 프론트 재빌드까지 함께 처리한다.</figcaption>
+          <figcaption style="color:var(--stamp); border-color:var(--stamp-line)">⚠ <code>.env</code>를 고쳐도 재시작 전까진 반영되지 않는다 — 죽은 로컬 터널을 보고 있는 채로 한참 서비스될 수 있으니, provider를 바꾼 뒤엔 항상 재시작 + <code>/api/health</code> 확인을 습관화한다. 재시작은 <code>scripts\server.ps1 restart</code>가 프론트 재빌드까지 함께 처리한다.</figcaption>
         </figure>
       </div>
 
