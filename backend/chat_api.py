@@ -779,10 +779,6 @@ def register_chat_api(app: Any) -> None:
                 answer = ""
                 query_count = 0
                 successful_dataverse_queries = 0
-                input_tokens = 0
-                output_tokens = 0
-                cache_read_tokens = 0
-                cache_write_tokens = 0
                 fallback_used = False
                 log.info(
                     "API-질문",
@@ -835,12 +831,6 @@ def register_chat_api(app: Any) -> None:
                         raise RuntimeError("LLM 공급자의 안전 필터로 응답이 완료되지 않았습니다.")
                     if stop_reason == "unknown":
                         raise RuntimeError("LLM 공급자가 알 수 없는 종료 사유를 반환했습니다.")
-
-                    usage = as_object(done_event.get("usage"))
-                    input_tokens += int(usage.get("inputTokens") or 0)
-                    output_tokens += int(usage.get("outputTokens") or 0)
-                    cache_read_tokens += int(usage.get("cacheReadInputTokens") or 0)
-                    cache_write_tokens += int(usage.get("cacheCreationInputTokens") or 0)
 
                     assistant_message = as_object(done_event.get("message"))
                     if assistant_message.get("role") != "assistant" or not isinstance(
@@ -975,8 +965,6 @@ def register_chat_api(app: Any) -> None:
                 log.info(
                     "API-답변",
                     f"{_safe_text(answer, 300)} ({elapsed:.1f}초, 쿼리 {query_count}회, "
-                    f"토큰 in:{input_tokens} out:{output_tokens} "
-                    f"cache_read:{cache_read_tokens} cache_write:{cache_write_tokens}, "
                     f"provider:{provider.kind}, model:{provider.model})",
                     {
                         **log_context,
