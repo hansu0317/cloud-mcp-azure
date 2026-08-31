@@ -233,9 +233,10 @@ export default function App() {
   }, [])
 
   // 노트북 셀 자동저장(디바운스는 NotebookView 쪽에서 처리). 서버 저장뿐 아니라
-  // activeProject.cells도 같이 갱신해야 InstructionsPanel의 "노트북에서 가져오기"가
-  // 방금 실행한 셀을 바로 볼 수 있다(안 그러면 최초 로드 시점 cells로 고정돼버림) —
-  // InstructionsPanel은 activeProject.id로만 key를 주므로 이 갱신으로 리마운트되진 않는다.
+  // activeProject.cells도 같이 갱신해야 재접속 없이 최신 셀 상태를 유지한다.
+  // (예전엔 InstructionsPanel의 "노트북에서 가져오기"가 이 값을 참조했으나, 실행에
+  // 성공했다는 것과 답변이 맞다는 것은 별개라는 이유로 그 기능 자체를 없앴다
+  // (2026-08-31) — 이제 cells는 NotebookView 재개용으로만 쓰인다.)
   const handleCellsChange = useCallback((cells: Cell[]) => {
     if (!activeProject) return
     const projectId = activeProject.id
@@ -323,7 +324,6 @@ export default function App() {
             projectTables={activeProject.tables ?? []}
             projectUpdatedAt={activeProject.updatedAt}
             instructions={activeProject.instructions ?? EMPTY_INSTRUCTIONS}
-            cells={activeProject.cells}
             onSave={handleSaveInstructions}
             showToast={showToast}
           />

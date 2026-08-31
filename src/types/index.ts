@@ -109,6 +109,9 @@ export interface StreamChatOptions extends ChatRequest {
   onQuery?:  (tool: string, input: Record<string, unknown>) => void
   onDone?:   () => void
   onError?:  (message: string) => void
+  // 정지 버튼용 — abort()하면 fetch가 끊기고 서버는 연결 종료를 감지해 정리한다
+  // (chat_api.py의 event_stream() finally 참고). 안 넘기면 취소 불가능한 예전 동작 그대로.
+  signal?:   AbortSignal
 }
 
 // NotebookView forwardRef 핸들

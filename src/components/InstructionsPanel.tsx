@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { API } from '../constants'
 import { NOISE_COLUMN_RE, joinKey } from '../lib/schemaColumns'
-import type { Cell, Instructions, JoinDef, TermDef, ExampleDef } from '../types'
+import type { Instructions, JoinDef, TermDef, ExampleDef } from '../types'
 
 interface Props {
   collapsed:        boolean
@@ -15,7 +15,6 @@ interface Props {
   // 남는 경합이 있었다(2026-08-26 실측).
   projectUpdatedAt: string
   instructions:     Instructions
-  cells:            Cell[]
   onSave:           (next: Instructions) => Promise<void>
   showToast:        (msg: string) => void
 }
@@ -88,7 +87,7 @@ function isNoiseColumn(col: ColumnInfo, all: ColumnInfo[]): boolean {
 const HINT_TEXT: Record<Tab, string> = {
   joins: '테이블 두 개를 엮는 질문에서 AI가 틀린다면 연결을 알려주세요. 전부 Dataverse가 이미 아는 실제 연결(FK)만 보여드리니, SQL을 몰라도 목록에서 눌러서 추가하기만 하면 됩니다 — 직접 정의할 필요는 없어요.',
   terms: '컬럼 값(true/false 등)이 실제로 무슨 뜻인지 AI가 모를 때 알려주세요. 아래는 Dataverse에 설명이 없는 컬럼만 자동으로 골라 보여줍니다.',
-  examples: 'AI 답변이 매번 다르거나 헤매면 대표 질문·답변 예시를 등록하세요. 답변은 지어내지 말고 노트북에서 실제로 물어봐서 나온 결과 그대로 넣으세요 — 아래 ✓ 버튼으로 실행된 셀을 가져오면 편합니다.',
+  examples: 'AI 답변이 매번 다르거나 헤매면 대표 질문·답변 예시를 등록하세요. 답변은 지어내지 말고 노트북에서 실제로 물어봐서 나온 결과를 사람이 직접 확인한 뒤 그대로 옮겨 적으세요 — 조회가 성공했다고 답변까지 맞다는 뜻은 아니므로, 자동으로 가져오지 않고 항상 확인 후 손으로 입력합니다.',
 }
 
 // 탭 안에 항상 떠 있는 작은 물음표 — 누르면 HintPopup이 뜬다.
@@ -161,6 +160,57 @@ function TermQuickRow({ col, active, draft, onActivate, onChange, onAdd }: {
   )
 }
 
+// "정의 필요" 목록은 needsTerm()으로 이미 Boolean 컬럼만 걸러져 들어오므로(위 참고),
+// 범용 term/def 두 칸 대신 true/false 전용 폼을 쓴다(2026-08-31 — "두 칸이
+// 헷갈린다"는 피드백). "정확한 뜻"은 Boolean이면 항상 리터럴 true/false라
+// 사용자가 입력할 이유가 없어 고정하고, true·false 각각 "뭐라고 부르는지"만
+// 받는다. 한 번에 둘 다(또는 아는 쪽만) 추가할 수 있게 했다 — 한쪽만 추가하면
+// 이 컬럼이 candidates 필터(등록된 게 하나라도 있으면 목록에서 통째로 빠짐)에
+// 걸려 나머지 값을 나중에 추가할 방법이 없어지기 때문이다.
+function BoolTermRow({ col, active, onActivate, onAdd }: {
+  col: ColumnInfo; active: boolean
+  onActivate: () => void; onAdd: (trueTerm: string, falseTerm: string) => void
+}) {
+  const [trueTerm, setTrueTerm] = useState('')
+  const [falseTerm, setFalseTerm] = useState('')
+
+  if (!active) {
+    return (
+      <button type="button" className="instr-term-row-btn" onClick={onActivate}>
+        <span className="instr-term-row-col">{col.name}</span>
+        <span className="instr-term-row-desc">{col.desc}</span>
+        <span className="instr-term-row-plus">＋</span>
+      </button>
+    )
+  }
+  const submit = () => {
+    if (!trueTerm.trim() && !falseTerm.trim()) return
+    onAdd(trueTerm.trim(), falseTerm.trim())
+    setTrueTerm('')
+    setFalseTerm('')
+  }
+  return (
+    <div className="instr-term-active">
+      <div className="instr-term-active-hdr"><b>{col.name}</b> — {col.desc}</div>
+      <input
+        className="proj-new-input instr-select"
+        placeholder="True일 때 업무에서 뭐라고 부르나요? (예: 진행중)"
+        value={trueTerm}
+        onChange={e => setTrueTerm(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter') submit() }}
+      />
+      <input
+        className="proj-new-input instr-select"
+        placeholder="False일 때는요? (예: 종료) — 모르면 비워두세요"
+        value={falseTerm}
+        onChange={e => setFalseTerm(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter') submit() }}
+      />
+      <button type="button" className="btn btn-sm primary instr-step-add" onClick={submit}>이 용어 추가</button>
+    </div>
+  )
+}
+
 // 연결 한 줄 — 예전엔 줄마다 "설명 없으면 ＋설명 추가" 프롬프트를 항상 띄워서
 // 목록(특히 여러 개일 때)이 너무 길어 보인다는 피드백(2026-08-24)을 받았다. 값이
 // 있을 때만 짧게 보여주는 건 그대로 두되(없으면 그냥 표시할 게 없는 것), 설명
@@ -228,7 +278,7 @@ function JoinRow({ join, fromLabel, toLabel, fromColLabel, onDelete, onSaveLabel
 // 스스로 하는 게 아니라, App.tsx가 <InstructionsPanel key={activeProject.id} .../>로
 // 프로젝트 전환 시 강제로 새로 마운트시켜서다(NotebookView와 동일한 패턴) — 그래야
 // 아래 useState(instructions.*) 초기값이 새 프로젝트 것으로 다시 계산된다.
-export default function InstructionsPanel({ collapsed, projectId, projectName, projectTables, projectUpdatedAt, instructions, cells, onSave, showToast }: Props) {
+export default function InstructionsPanel({ collapsed, projectId, projectName, projectTables, projectUpdatedAt, instructions, onSave, showToast }: Props) {
   const [tab, setTab] = useState<Tab>('joins')
   const [joins,    setJoins]    = useState<JoinDef[]>(instructions.joins)
   const [terms,    setTerms]    = useState<TermDef[]>(instructions.terms)
@@ -289,11 +339,14 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
   const [termAddOpen,    setTermAddOpen]    = useState(() => terms.length === 0)
   const [exampleAddOpen, setExampleAddOpen] = useState(() => examples.length === 0)
 
-  // 조인은 다이어그램에서 클릭으로, 용어는 "정의 필요" 목록에서, 예시는 "노트북에서
-  // 가져오기"에서 각자 알아서 후보를 보여주므로(각 탭 참고) 로그를 훑어 한 번에
-  // 채우던 전역 "초안 생성" 버튼은 뺐다 — 탭마다 이미 자기 프로젝트 범위의 후보를
-  // 보여주는 제자리 메커니즘이 있어서 중복이었다. draftMsg는 저장 시 "안 채운 후보는
-  // 저장 안 됨" 안내(handleSave)에 계속 쓰인다.
+  // 조인은 "테이블에서 찾아 추가하기"(Dataverse 실제 FK 후보), 용어는 "컬럼에서
+  // 찾아 추가하기"(정의 필요 컬럼 목록)에서 각자 알아서 후보를 보여주므로(각 탭
+  // 참고) 로그를 훑어 한 번에 채우던 전역 "초안 생성" 버튼은 뺐다 — 탭마다 이미 자기
+  // 프로젝트 범위의 후보를 보여주는 제자리 메커니즘이 있어서 중복이었다. 예시는
+  // 원래 노트북 실행 이력에서 후보를 가져왔으나(2026-08-24), "실행 성공 ≠ 답변 정확"
+  // 이라 틀린 답을 그대로 지침에 박제할 위험이 있어 그 자동 후보만 없앴다(2026-08-31)
+  // — 사람이 직접 확인하고 입력하는 수동 입력만 남는다. draftMsg는 저장 시 "안 채운
+  // 초안 후보는 저장 안 됨" 안내(handleSave)에 계속 쓰인다.
   const [draftMsg, setDraftMsg] = useState<string | null>(null)
 
   // 테이블 목록 + 컬럼 설명 캐시 — 드롭다운/용어 목록을 채우는 용도. 컬럼은 필요한
@@ -384,6 +437,15 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
     setTerms(prev => [...prev, { ...termDraft }])
     setTermDraft(EMPTY_TERM)
   }
+  // BoolTermRow 전용 — true/false 중 채운 쪽만(또는 둘 다) 한 번에 추가한다.
+  const addBoolTerm = (table: string, column: string, trueTerm: string, falseTerm: string) => {
+    const additions: TermDef[] = []
+    if (trueTerm)  additions.push({ table, column, term: trueTerm,  def: 'true' })
+    if (falseTerm) additions.push({ table, column, term: falseTerm, def: 'false' })
+    if (additions.length === 0) return
+    setTerms(prev => [...prev, ...additions])
+    setTermDraft(EMPTY_TERM)
+  }
   const addExample = () => {
     if (!exampleDraft.question.trim() || !exampleDraft.answer.trim()) return
     setExamples(prev => [...prev, { ...exampleDraft }])
@@ -420,17 +482,6 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
       setSaving(false)
     }
   }
-
-  // 로그에서 자동으로 답까지 채우는 대신(5번 참고), 지금 이 세션에서 실제로 실행해서
-  // 눈으로 확인한 셀만 "검증된" 후보로 본다 — dataverse_query가 최소 한 번 성공했고
-  // (describe만 호출한 셀은 제외), 에러 없이 끝난 셀만 추린다.
-  const verifiedCells = useMemo(
-    () => cells.filter(c =>
-      c.output && !c.output.loading && !c.output.error && c.output.content.trim()
-      && (c.output.queries ?? []).some(q => q.tool === 'dataverse_query'),
-    ),
-    [cells],
-  )
 
   const totalCount = joins.length + terms.length + examples.length
   // 자동 후보를 보여주는 곳이 이제 이 섹션 하나뿐이라(2026-08-26 — "관계를 찾았습니다"를
@@ -666,13 +717,11 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
                         {need.length > 0 && <span className="instr-term-need-badge">{need.length}개 정의 필요</span>}
                       </div>
                       {need.map(c => (
-                        <TermQuickRow
+                        <BoolTermRow
                           key={c.name} col={c}
                           active={termDraft.table === table && termDraft.column === c.name}
-                          draft={termDraft}
                           onActivate={() => activateTerm(table, c.name)}
-                          onChange={setTermDraft}
-                          onAdd={addTerm}
+                          onAdd={(t, f) => addBoolTerm(table, c.name, t, f)}
                         />
                       ))}
                       {covered.length > 0 && (
@@ -708,29 +757,14 @@ export default function InstructionsPanel({ collapsed, projectId, projectName, p
           {exampleAddOpen && (
             <div className="instr-add-pinned-body">
               <div className="instr-add-col">
-                {verifiedCells.length > 0 ? (
-                  <>
-                    <div className="instr-field-label">노트북에서 가져오기 — 눌러서 아래 칸에 채우기</div>
-                    <div className="instr-cellpick-row">
-                      {verifiedCells.slice(-6).reverse().map(c => (
-                        <button
-                          type="button"
-                          key={c.id}
-                          className="instr-cellpick"
-                          title="이 셀의 질문·답변을 아래 입력칸에 채웁니다 — 필요하면 고쳐서 쓰세요"
-                          onClick={() => setExampleDraft({ question: c.text, answer: c.output!.content })}
-                        >
-                          ✓ {c.text.slice(0, 28)}{c.text.length > 28 ? '…' : ''}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                ) : (
-                  <div className="instr-hint" style={{ padding: '0 0 4px' }}>
-                    아직 이 프로젝트에서 실제로 조회에 성공한 셀이 없습니다 — 노트북에서 먼저 질문해보면 여기 후보로 뜹니다.
-                    그전까지는 아래에서 질문·답변을 직접 입력해 시작할 수 있습니다.
-                  </div>
-                )}
+                {/* 예전엔 노트북에서 실행된 셀을 버튼 한 번으로 가져와 채웠다(2026-08-24) —
+                    하지만 "조회(dataverse_query)가 에러 없이 끝났다"는 것과 "그 답변
+                    문구가 맞다"는 것은 별개라서, 틀렸을 수도 있는 답을 그대로 지침에
+                    박제할 위험이 있었다. 그래서 자동 가져오기를 없애고(2026-08-31),
+                    노트북에서 직접 확인한 뒤 아래에 손으로 옮겨 적게 한다. */}
+                <div className="instr-hint" style={{ padding: '0 0 4px' }}>
+                  노트북에서 먼저 물어보고, 나온 결과가 맞는지 직접 확인한 다음 아래에 그대로 옮겨 적으세요.
+                </div>
                 {/* 질문 → 답변 순서로 놓는다 — 답변은 "원하는 형태"를 지어내는 칸이 아니라,
                     노트북에서 실제로 물어봐서 나온 결과를 그대로 옮기는 칸이라는 걸
                     placeholder로도 드러낸다. */}

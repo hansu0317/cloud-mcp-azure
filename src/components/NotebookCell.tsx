@@ -7,12 +7,13 @@ import QueryPanel from './QueryPanel'
 interface Props {
   cell:         Cell
   onRun:        () => void
+  onStop:       () => void
   onDelete:     () => void
   onTextChange: (text: string) => void
   onExport:     () => void
 }
 
-export default function NotebookCell({ cell, onRun, onDelete, onTextChange, onExport }: Props) {
+export default function NotebookCell({ cell, onRun, onStop, onDelete, onTextChange, onExport }: Props) {
   const taRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -67,8 +68,12 @@ export default function NotebookCell({ cell, onRun, onDelete, onTextChange, onEx
           {output?.rawContent && (
             <button className="btn btn-sm" onClick={onExport} title="내보내기">↓</button>
           )}
-          <button className="btn btn-sm" onClick={onRun} disabled={isRunning}>
-            {isRunning ? '⏳' : '▶ 실행'}
+          {/* 예전엔 실행 중일 때 이 버튼이 그냥 비활성 ⏳였다 — 멈출 방법이 없어서
+              "질문 보내고 계속 도는데 끊을 수가 없다"는 피드백(2026-08-31)이 나왔다.
+              이제 실행 중엔 같은 자리가 정지 버튼이 된다(NotebookView.stopCell →
+              AbortController.abort() — 서버는 연결 종료를 감지해 알아서 정리한다). */}
+          <button className={`btn btn-sm${isRunning ? ' stop' : ''}`} onClick={isRunning ? onStop : onRun}>
+            {isRunning ? '■ 정지' : '▶ 실행'}
           </button>
           <button className="btn btn-sm danger" onClick={handleDeleteClick}>×</button>
         </div>

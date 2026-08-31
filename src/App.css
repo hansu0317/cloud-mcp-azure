@@ -20,6 +20,11 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 .btn.primary:hover { background: #5558e3; border-color: #5558e3; }
 .btn.active { border-color: #6366f1; color: #a5b4fc; background: #1a1f30; }
 .btn.danger:hover { border-color: #f87171; color: #f87171; background: #1a0a0a; }
+/* 실행 중 셀의 정지 버튼 — 삭제(danger, 빨강)와 구분되게 경고색(호박색)으로 항상
+   눈에 띄게 둔다(호버 전에도) — "멈출 방법이 없다"는 피드백(2026-08-31) 이후,
+   실행 중엔 이 버튼이 유일하게 누를 수 있는 조작이라 평소보다 잘 보여야 한다. */
+.btn.stop { border-color: #f59e0b; color: #fbbf24; }
+.btn.stop:hover { border-color: #f59e0b; color: #fde68a; background: #2a1a05; }
 .btn-xs { padding: 2px 7px; font-size: 11px; border-radius: 4px; }
 .btn-sm { padding: 3px 9px; font-size: 11px; }
 .nb-only { display: flex; gap: 4px; }
@@ -251,12 +256,6 @@ header { flex-shrink: 0; display: flex; align-items: center; gap: 6px; height: 4
 .instr-term-covered { margin: 2px 0 8px; font-size: 11px; }
 .instr-term-covered summary { cursor: pointer; color: #475569; padding: 4px 6px; }
 .instr-term-covered summary:hover { color: #94a3b8; }
-
-/* 질문 예시 탭 — 노트북에서 실제로 실행해서 성공한 셀을 골라 오는 버튼 목록.
-   자유 입력 템플릿(.instr-chip)보다 신뢰도가 높다는 걸 보여주려고 색을 다르게 뒀다. */
-.instr-cellpick-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 10px 4px; }
-.instr-cellpick { font-size: 11px; padding: 4px 10px; border-radius: 999px; background: #0d1a12; border: 1px solid #16351f; color: #86efac; cursor: pointer; font-family: inherit; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.instr-cellpick:hover { border-color: #22c55e; color: #bbf7d0; }
 
 /* Notebook */
 .notebook-view { flex: 1; display: flex; overflow: hidden; }

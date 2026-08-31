@@ -9,12 +9,13 @@ export function renderMd(text: string): string {
 }
 
 export async function streamChat(opts: StreamChatOptions): Promise<void> {
-  const { message, sessionId, onText, onTool, onQuery, onDone, onError } = opts
+  const { message, sessionId, onText, onTool, onQuery, onDone, onError, signal } = opts
 
   const resp = await fetch(API.CHAT, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ message, sessionId }),
+    signal,
   })
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
 
