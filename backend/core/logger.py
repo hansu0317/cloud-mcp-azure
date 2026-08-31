@@ -69,6 +69,25 @@ class _TimedSizedRotatingFileHandler(BaseRotatingHandler):
         self.backup_count = backup_count
         self.rollover_at = _next_local_midnight_epoch()
         super().__init__(filename, mode="a", encoding="utf-8", delay=False)
+        self._rollover_stale_file_from_previous_run()
+
+    def _rollover_stale_file_from_previous_run(self) -> None:
+        """자정을 못 넘기고 재시작을 반복하면 날짜 기준 회전이 영원히 안 걸릴 수
+        있다 — ``rollover_at``이 매 프로세스 시작마다 "지금부터 다음 자정"으로
+        새로 계산되므로, 서버가 자정 전에 자주 내려갔다 올라오면 그 경계를 한
+        번도 실제로 넘지 못한다(2026-08-31 실측: 서버를 하루에도 여러 번
+        재시작했더니 활성 로그 파일에 며칠치가 그대로 누적돼 있었음 — 50MB
+        크기 상한에 걸릴 때까진 방치됨). 그래서 시작 시점에 기존 파일의 마지막
+        수정일이 오늘보다 이전이면 — 즉 그 파일이 이미 지난 날짜의 로그라면 —
+        새로 쓰기 전에 한 번 먼저 돌려서(gzip 보관 + 오래된 것부터 정리) 날짜
+        경계가 재시작 여부와 무관하게 지켜지게 한다.
+        """
+        active = Path(self.baseFilename)
+        if not active.exists() or not active.stat().st_size:
+            return
+        last_modified = datetime.fromtimestamp(active.stat().st_mtime).astimezone()
+        if last_modified.date() < datetime.now().astimezone().date():
+            self.doRollover()
 
     def shouldRollover(self, record: logging.LogRecord) -> int:  # noqa: N802 - logging API
         if datetime.now().astimezone().timestamp() >= self.rollover_at:
