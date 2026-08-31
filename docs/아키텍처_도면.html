@@ -288,6 +288,13 @@
     color:var(--ink-faint);
   }
   .see-also code{ color:var(--ink-soft); }
+
+  /* ── 전제상황 목록 ─────────────────────────────────────────── */
+  .premise-list{ margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:11px; }
+  .premise-list li{ padding-left:20px; position:relative; font-size:.87rem; color:var(--ink-soft); }
+  .premise-list li::before{ content:"—"; position:absolute; left:0; color:var(--stamp); font-weight:700; }
+  .premise-list b{ color:var(--ink); }
+  .premise-list code{ color:var(--ink); background:var(--panel-2); padding:1px 5px; border-radius:3px; font-size:.9em; }
 </style>
 
 <div class="sheet-stack">
@@ -295,16 +302,17 @@
   <div class="titleblock">
     <p class="kicker">system reference</p>
     <h1>crm-ai-chat 아키텍처 도면</h1>
-    <p class="sub">crm-ai-chat 프로젝트: 코드 계층·파일 지도·API 스펙·핵심 워크플로우를 한 장씩 정리했다. 산문 설명은 <code>docs/HANDOVER.md</code>.</p>
+    <p class="sub">crm-ai-chat 프로젝트: 전제·코드 계층·파일 지도·API 스펙·핵심 워크플로우(프로세스 흐름·데이터 흐름)를 한 장씩 정리했다. 산문 설명은 <code>docs/HANDOVER.md</code>.</p>
     <dl class="meta">
-      <div><dt>브랜치</dt><dd>main</dd></div>
       <div><dt>스택</dt><dd>FastAPI / Python 3.11+ / React+TS</dd></div>
       <div><dt>엔드포인트</dt><dd>21개</dd></div>
       <div><dt>LLM 프로필</dt><dd>Cloud(anthropic) · Local(ollama)</dd></div>
+      <div><dt>배포 단위</dt><dd>고객사당 서버 1대</dd></div>
     </dl>
   </div>
 
   <nav class="toc">
+    <a href="#sheet-00">00 전제상황</a>
     <a href="#sheet-01">01 코드 계층</a>
     <a href="#sheet-02">02 코드 지도</a>
     <a href="#sheet-03">03 API 스펙</a>
@@ -314,6 +322,30 @@
     <a href="#sheet-07">07 정지·좀비복구</a>
     <a href="#sheet-08">08 LLM 프로필 전환</a>
   </nav>
+
+  <!-- ══════════════════════════════════════════════════════════
+       SHEET 00 — 전제상황
+       ══════════════════════════════════════════════════════════ -->
+  <section class="sheet" id="sheet-00">
+    <div class="sheet-head">
+      <span class="sheet-num">SHEET 00</span>
+      <h2>전제상황 — 코드를 읽기 전에 알아야 할 것</h2>
+    </div>
+    <div class="sheet-body">
+      <p class="sheet-note">아래를 모르고 코드만 보면 "왜 이렇게 허술하게 짰지"로 오해하기 쉬운 것들이다 — 전부 의도된 설계 경계다.</p>
+      <ul class="premise-list">
+        <li><b>조회 전용이다.</b> Dataverse 레코드를 생성·수정·삭제하는 도구 자체가 없다 — LLM에게 줄 수 있는 도구가 <code>dataverse_query</code>·<code>dataverse_describe_table</code> 두 개뿐이라 애초에 쓸 수도 없다.</li>
+        <li><b>화이트리스트 로그인이지 RBAC이 아니다.</b> <code>data/users.json</code>에 없는 이메일은 Microsoft 인증에 성공해도 세션 자체가 안 만들어진다. 일단 통과하면 그 사람은 자기 프로젝트 안에서는 뭐든 할 수 있다 — 기능별·프로젝트별 세분화된 권한 단계는 없다.</li>
+        <li><b>프로젝트는 개인 소유다(v1).</b> 로그인한 사람마다 자기 폴더(<code>users/&lt;email&gt;/projects/</code>) 안 것만 보고 고친다. 부서 공유·소유자 전용 편집 같은 v2 기능은 별도 브랜치에 보류돼 있다.</li>
+        <li><b>테이블 스코프는 보안 경계가 아니라 UX 힌트다.</b> 실제 데이터 접근 권한은 Dataverse 서비스 주체의 보안 역할이 결정한다. 프로젝트에서 테이블을 빼는 건 "질문 범위를 좁혀서 모델이 헷갈리지 않게" 하는 것이지, 그 테이블을 못 보게 막는 게 아니다.</li>
+        <li><b>LLM은 Dataverse 자격증명을 모른다.</b> 서버가 대신 조회해서 결과만 돌려준다 — Anthropic이든 Ollama든 Dataverse를 직접 두드릴 방법이 없다.</li>
+        <li><b>Cloud 프로필은 질문·스키마·조회 결과가 외부(Anthropic)로 나갈 수 있다.</b> Local(Ollama)은 그 경계가 사내 호스트 안에 머문다 — 고객사 데이터 민감도에 따라 프로필을 고르는 이유다.</li>
+        <li><b>고객사당 서버 1대 인도 모델이다.</b> 멀티테넌트 SaaS가 아니라, 한 서버 = 한 회사이고 그 안에서만 사람별 폴더로 격리한다.</li>
+        <li><b>단일 프로세스·파일 기반 저장이다.</b> DB 트랜잭션이나 프로세스 간 분산 락이 없다 — 여러 인스턴스를 동시에 띄우면 프로젝트 파일과 메모리 세션을 안전하게 공유하지 못한다.</li>
+        <li><b>이 저장소와 무관한 별도 프로젝트가 둘 있다.</b> <code>crm-ai-chat-mcp</code>(독립 MCP 서버 — 이 웹앱은 호출하지 않음)와 사내 메일 에이전트(완전히 다른 저장소)다. 코드 검색하다 섞어서 보지 않는다.</li>
+      </ul>
+    </div>
+  </section>
 
   <!-- ══════════════════════════════════════════════════════════
        SHEET 01 — 코드 계층 구조
