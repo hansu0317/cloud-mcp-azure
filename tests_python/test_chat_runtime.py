@@ -317,7 +317,7 @@ class ChatRuntimeTests(unittest.IsolatedAsyncioTestCase):
         query_result = next(
             result for result in tool_results if result["name"] == "dataverse_query"
         )
-        self.assertLessEqual(len(query_result["content"].encode("utf-8")), 8 * 1024)
+        self.assertLessEqual(len(query_result["content"].encode("utf-8")), chat_api.MAX_TOOL_OUTPUT_BYTES)
         self.assertLessEqual(len(json.loads(query_result["content"])), 100)
 
         self.assertEqual(self.save_history.call_count, 1)
@@ -365,7 +365,7 @@ class ChatRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tool_output_is_valid_utf8_bounded_json_after_full_body_return(self) -> None:
         # dataverse_get mock이 큰 본문을 반환한 뒤에도 chat 계층의 downstream
-        # 8 KiB/100행 상한이 독립적으로 적용되는지 확인한다.
+        # MAX_TOOL_OUTPUT_BYTES/100행 상한이 독립적으로 적용되는지 확인한다.
         huge_body = json.dumps(
             {"value": [{"name": "한" * 10_000} for _ in range(150)]},
             ensure_ascii=False,
@@ -373,7 +373,7 @@ class ChatRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(chat_api, "dataverse_get", AsyncMock(return_value=huge_body)):
             result = await chat_api._dataverse_query("accounts?$count=true", ["account"])
 
-        self.assertLessEqual(len(result.encode("utf-8")), 8 * 1024)
+        self.assertLessEqual(len(result.encode("utf-8")), chat_api.MAX_TOOL_OUTPUT_BYTES)
         parsed = json.loads(result)
         rows = parsed.get("value", []) if isinstance(parsed, dict) else parsed
         self.assertLessEqual(len(rows), 100)

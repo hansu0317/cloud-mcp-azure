@@ -47,7 +47,7 @@ class DataverseGuardContractTests(unittest.TestCase):
     def test_collection_query_gets_default_top_and_keeps_explicit_limits(self) -> None:
         self.assertEqual(
             chat_api._guard_odata_path("accounts?$select=name", []),
-            "accounts?$select=name&$top=100",
+            f"accounts?$select=name&$top={chat_api.DEFAULT_DATAVERSE_TOP}",
         )
         self.assertEqual(
             chat_api._guard_odata_path("/accounts?$top=5", []),
@@ -59,11 +59,11 @@ class DataverseGuardContractTests(unittest.TestCase):
         )
         self.assertEqual(
             chat_api._guard_odata_path("accounts?$top=10000", []),
-            "accounts?$top=100",
+            f"accounts?$top={chat_api.MAX_DATAVERSE_ROWS}",
         )
         self.assertEqual(
             chat_api._guard_odata_path("accounts?$count=true", []),
-            "accounts?$count=true&$top=100",
+            f"accounts?$count=true&$top={chat_api.DEFAULT_DATAVERSE_TOP}",
         )
         self.assertEqual(
             chat_api._guard_odata_path("accounts/$count", []),
