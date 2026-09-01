@@ -159,6 +159,16 @@ _ODATA_TEXT_FALLBACK_RE = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*\?\$(?:select|filter|top|orderby|count|apply)=",
     re.IGNORECASE,
 )
+# 2026-09-01 실측(로컬 Ollama, server.local.log): 도구 호출 없이 끝난 턴인데 답변
+# 텍스트가 "dataverse_describe_table을 호출하겠습니다"처럼 도구를 부르겠다는 의도만
+# 말하고 실제로는 안 부른 경우가 6턴 연속 반복돼 사용자가 끝내 원하는 답을 못 받은
+# 사례가 나왔다(같은 질문에 Claude는 describe→query 3회 재시도까지 스스로 해서 한
+# 턴에 끝냄). 이 텍스트엔 항상 내부 도구 이름이 그대로 새어나온다 — 정상적인 최종
+# 답변이라면 사용자에게 "dataverse_query" 같은 내부 이름을 보여줄 이유가 없으므로
+# (SYSTEM_PROMPT_WORKFLOW_LINES 마지막 규칙도 이미 이걸 금지) 이 패턴은 "말로만
+# 하고 실행은 안 한 턴"의 신뢰도 높은 신호다. 이걸 최종 답변으로 그냥 승인하는 대신
+# 한 번 더 강하게 요구해서 실제로 호출하게 만든다.
+_NARRATED_TOOL_INTENT_RE = re.compile(r"dataverse_(?:describe_table|query)", re.IGNORECASE)
 # 2026-08-28 실측: new_dayoffs 22행을 $select 6개 컬럼(+Dataverse가 자동으로 붙이는
 # FormattedValue 주석)만으로 조회해도 11.76 KB — 기존 8 KiB 상한에서 22행 중 16행만
 # (심지어 무필터 조회는 3행만) 남고 잘렸다. 이게 "안희태 등 일부만 나온다"는 증상의
@@ -505,6 +515,9 @@ def _build_system_prompt(tables: list[str], instructions: dict[str, Any]) -> str
         "1) 아래 [테이블 카탈로그]에 있는 이름만 그대로 사용해 질문에 필요한 테이블을 고르세요.",
         "2) 정확한 컬럼명을 모르면 dataverse_describe_table을 호출하세요.",
         "3) dataverse_query를 호출해 실제 데이터를 조회한 결과만 근거로 답하세요.",
+        "'dataverse_describe_table을 호출하겠습니다' 같은 예고만 하고 실제로는 호출하지"
+        " 않은 채로 답변을 끝내지 마세요 — 그건 완료가 아니라 실패입니다. 지금 이 턴에서"
+        " 바로 그 도구를 호출하세요.",
         "답변 텍스트에 OData·SQL·JSON을 적어 조회한 것처럼 흉내 내지 마세요.",
         "path는 테이블명이 아니라 카탈로그 각 줄 맨 앞의 엔티티집합명으로 시작해야 합니다 —"
         " 예를 들어 테이블명이 new_project여도 path는 new_project가 아니라"
@@ -898,6 +911,23 @@ def register_chat_api(app: Any) -> None:
                                             "isError": is_error,
                                         }
                                     ]
+                                )
+                            )
+                            continue
+
+                        # 도구 호출은 없는데 답변 텍스트에 내부 도구 이름이 그대로
+                        # 새어나오면("~을 호출하겠습니다") 실제로는 아무것도 안 하고
+                        # 말로만 예고한 것이다 — 이걸 최종 답변으로 승인하지 않고
+                        # 실제로 호출하라고 요구한다. 횟수를 따로 안 세우고 매번
+                        # 걸리게 둔다 — 계속 반복되면 결국 MAX_TOOL_LOOPS 상한에
+                        # 걸려 정직하게 오류로 끝난다(예고만 반복하다 조용히
+                        # "완료"로 끝나는 것보다 낫다).
+                        if _NARRATED_TOOL_INTENT_RE.search(candidate):
+                            session.messages.append(
+                                user_text_message(
+                                    "방금 응답은 도구를 호출하지 않고 호출하겠다는 말만 했습니다."
+                                    " 설명하지 말고 지금 바로 dataverse_describe_table 또는"
+                                    " dataverse_query를 실제로 호출하세요."
                                 )
                             )
                             continue

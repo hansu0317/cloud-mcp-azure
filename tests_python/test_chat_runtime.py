@@ -121,6 +121,35 @@ class _SerialProvider:
             self.active -= 1
 
 
+class _NarratesThenAnswersProvider:
+    """2026-09-01 실측(로컬 Ollama)한 실패 패턴 재현: 도구 호출 없이 "~을
+    호출하겠습니다"라고 말만 하고 끝내는 턴을 최대 narrate_turns회 반복하다가,
+    그 이후엔 정상적으로 답한다. narrate_turns를 크게 주면 "계속 말만 한다" 케이스도
+    재현할 수 있다."""
+
+    kind = "ollama"
+    model = "narrator-test"
+    endpoint = "https://provider.invalid"
+
+    def __init__(self, narrate_turns: int) -> None:
+        self.narrate_turns = narrate_turns
+        self.call_count = 0
+        self.requests: list[list[dict[str, Any]]] = []
+
+    def is_configured(self) -> bool:
+        return True
+
+    async def stream(self, request):
+        self.call_count += 1
+        self.requests.append(deepcopy(list(request.messages)))
+        if self.call_count <= self.narrate_turns:
+            text = "dataverse_describe_table을 호출하겠습니다."
+        else:
+            text = "실제 답변입니다."
+        yield {"type": "text", "text": text}
+        yield _assistant_done(text)
+
+
 class SemaphoreCancellationTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancelled_waiters_do_not_leak_active_capacity(self) -> None:
         semaphore = Semaphore(1)
@@ -362,6 +391,44 @@ class ChatRuntimeTests(unittest.IsolatedAsyncioTestCase):
         error_data = self.log_error.call_args.args[2]
         self.assertEqual(error_data["sessionId"], "rollback-session")
         self.assertTrue(error_data["requestId"])
+
+    async def test_narrated_tool_intent_without_call_is_retried_not_accepted(self) -> None:
+        # 2026-09-01 실측 회귀 테스트: 도구를 "호출하겠다"고 말만 하고 실제로는
+        # 안 부른 턴을 최종 답변으로 승인해버리면, 사용자는 원하는 데이터를
+        # 영영 못 받는다(그 세션의 실제 증상). 서버가 이를 감지해 재요구하고,
+        # 그 결과 진짜 답변이 나온 뒤에야 done으로 끝나야 한다.
+        self.provider = _NarratesThenAnswersProvider(narrate_turns=1)
+        response = await self._chat("질문")
+        self.assertEqual(response.status_code, 200)
+        events = self._events(response)
+
+        text_events = [e["text"] for e in events if e["type"] == "text"]
+        self.assertEqual(text_events, ["실제 답변입니다."])
+        self.assertNotIn("호출하겠습니다", " ".join(text_events))
+        self.assertEqual(events[-1]["type"], "done")
+        self.assertEqual(self.provider.call_count, 2)
+
+        # 두 번째 호출 직전에 서버가 재요구 메시지를 실제로 넣어줬는지 확인.
+        second_call_messages = self.provider.requests[1]
+        nudge_texts = [
+            block.get("text", "")
+            for m in second_call_messages
+            for block in (m.get("content") if isinstance(m.get("content"), list) else [])
+            if isinstance(block, dict)
+        ]
+        self.assertTrue(any("실제로" in t and "호출" in t for t in nudge_texts))
+
+    async def test_repeated_narration_without_call_eventually_errors_honestly(self) -> None:
+        # 계속 말만 하고 끝내 호출을 안 하면(로컬 모델이 특히 취약), 조용히
+        # "완료"로 끝나는 대신 MAX_TOOL_LOOPS 상한에 걸려 정직하게 오류로 끝나야
+        # 한다 — 실패를 성공처럼 보이게 하는 것보다 낫다.
+        self.provider = _NarratesThenAnswersProvider(narrate_turns=chat_api.MAX_TOOL_LOOPS + 1)
+        response = await self._chat("질문")
+        self.assertEqual(response.status_code, 200)
+        events = self._events(response)
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertIn("반복 상한", events[-1]["message"])
+        self.assertEqual(self.provider.call_count, chat_api.MAX_TOOL_LOOPS)
 
     async def test_tool_output_is_valid_utf8_bounded_json_after_full_body_return(self) -> None:
         # dataverse_get mock이 큰 본문을 반환한 뒤에도 chat 계층의 downstream

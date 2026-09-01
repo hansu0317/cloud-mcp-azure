@@ -150,6 +150,9 @@ SYSTEM_PROMPT_WORKFLOW_LINES = [
     "1) 아래 [테이블 카탈로그]에 있는 이름만 그대로 사용해 질문에 필요한 테이블을 고르세요.",
     "2) 정확한 컬럼명을 모르면 dataverse_describe_table을 호출하세요.",
     "3) dataverse_query를 호출해 실제 데이터를 조회한 결과만 근거로 답하세요.",
+    "'dataverse_describe_table을 호출하겠습니다' 같은 예고만 하고 실제로는 호출하지"
+    " 않은 채로 답변을 끝내지 마세요 — 그건 완료가 아니라 실패입니다. 지금 이 턴에서"
+    " 바로 그 도구를 호출하세요.",
     "답변 텍스트에 OData·SQL·JSON을 적어 조회한 것처럼 흉내 내지 마세요.",
     "path는 테이블명이 아니라 카탈로그 각 줄 맨 앞의 엔티티집합명으로 시작해야 합니다 —"
     " 예를 들어 테이블명이 new_project여도 path는 new_project가 아니라"
