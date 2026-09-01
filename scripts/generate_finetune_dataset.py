@@ -47,7 +47,8 @@ SQL 문자열이 아니라 실제 프로덕션과 같은 "도구 호출"(tool_ca
 
 실행 (crm-ai-chat 루트에서, 외부 호출이 없으므로 --yes 불필요, 즉시·무료 실행):
     .venv\\Scripts\\python scripts\\generate_finetune_dataset.py
-    .venv\\Scripts\\python scripts\\generate_finetune_dataset.py --max-tables 20 --examples-per-table 8
+    .venv\\Scripts\\python scripts\\generate_finetune_dataset.py --examples-per-table 8
+    .venv\\Scripts\\python scripts\\generate_finetune_dataset.py --max-tables 5   # 빠른 스모크테스트용
 
 출력: data/finetune/dataverse_toolcall_dataset.jsonl (train+test 전체)
       각 줄 = {"messages": [...], "tools": [...], "meta": {..., "split": "train"|"test"}}
@@ -329,8 +330,9 @@ def build_join_templates(
         # A) 연결 여부만 — 가짜 데이터 없이 100% 안전
         sel = f"{select_prefix}&" if select_prefix else ""
         eul_reul_a = _josa(label, "을", "를")
+        i_ga_a = _josa(target_label, "이", "가")
         candidates.append((
-            f"{target_label}이(가) 연결된 {label}{eul_reul_a} 보여줘",
+            f"{target_label}{i_ga_a} 연결된 {label}{eul_reul_a} 보여줘",
             f"{entity_set}?{sel}$filter={lookup_col} ne null&$top=20",
         ))
 
@@ -383,10 +385,12 @@ def build_question_templates(
         candidates.append((q, f"{entity_set}?{sel}$orderby=createdon desc&$top={n}"))
 
     # 2) 개수 세기
-    candidates.append((f"{label}이(가) 총 몇 건 있어?", f"{entity_set}/$count"))
+    i_ga_count = _josa(label, "이", "가")
+    candidates.append((f"{label}{i_ga_count} 총 몇 건 있어?", f"{entity_set}/$count"))
     if has_statecode:
+        eun_neun = _josa(label, "은", "는")
         candidates.append(
-            (f"활성 상태인 {label}은 몇 건이야?", f"{entity_set}/$count?$filter=statecode eq 0")
+            (f"활성 상태인 {label}{eun_neun} 몇 건이야?", f"{entity_set}/$count?$filter=statecode eq 0")
         )
         sel = f"{select_prefix}&" if select_prefix else ""
         candidates.append(
@@ -398,7 +402,8 @@ def build_question_templates(
         num_label = clean_label(c["desc"])
         n = random.choice((3, 5, 10))
         sel = f"$select={name_col['name']},{c['name']}" if name_col else f"$select={c['name']}"
-        q = f"{label} 중 {num_label}이(가) 가장 높은 상위 {n}개를 보여줘"
+        i_ga_num = _josa(num_label, "이", "가")
+        q = f"{label} 중 {num_label}{i_ga_num} 가장 높은 상위 {n}개를 보여줘"
         candidates.append((q, f"{entity_set}?{sel}&$orderby={c['name']} desc&$top={n}"))
 
     # 4) Picklist 값으로 필터링
@@ -408,13 +413,140 @@ def build_question_templates(
         col_label = clean_label(c["desc"])
         sel = f"{select_prefix}&" if select_prefix else ""
         eul_reul = _josa(label, "을", "를")
-        q = f"{col_label}이(가) '{value_label}'인 {label}{eul_reul} 보여줘"
+        i_ga_col = _josa(col_label, "이", "가")
+        q = f"{col_label}{i_ga_col} '{value_label}'인 {label}{eul_reul} 보여줘"
         candidates.append((q, f"{entity_set}?{sel}$filter={c['name']} eq {code}&$top=20"))
 
     # 5) 관계(조인) 질문 — lookups가 있는 테이블에서만
     candidates.extend(build_join_templates(entry, columns, schema, select_prefix))
 
     return [(q, p) for q, p in candidates if q.strip() and p.strip()]
+
+
+# ─── "질문→도구호출→가짜 결과→최종답변" 예시 ──────────────────────────────────
+# 위 build_question_templates까지의 모든 예시는 "질문 → 도구 호출"에서 끝난다
+# (assistant 정답이 tool_calls뿐, content는 None). 그런데 실제 제품(chat_api.py의
+# 도구 루프)은 그 도구 결과를 다시 LLM에 넣어 "마크다운 표로, 숫자는 천 단위
+# 콤마로" 같은 시스템 프롬프트 규칙을 지킨 최종 한국어 답변을 만드는 두 번째
+# 단계까지 간다 — 이 스크립트는 그동안 그 두 번째 단계를 전혀 안 가르치고
+# 있었다(질문·도구 호출만 있고 "답변"이 없다는 지적이 정확했다). 여기서 그
+# 갭을 메우되, 진짜 고객 데이터는 여전히 안 쓴다 — Picklist 옵션 라벨(스키마
+# 메타데이터일 뿐 특정 고객 레코드가 아님)만 재사용하고 나머지 값은 "샘플"류
+# 접두사가 붙은, 누가 봐도 가짜인 자리표시자로 채운다. 범위는 렌더링이 명확한
+# 세 유형(최근 N건 목록·개수 세기·숫자 top-N)으로 한정한다 — Picklist 필터·조인
+# 질문까지 포함하려면 더 복잡한 가짜 데이터 생성이 필요해 1차로는 뺐다(위
+# build_question_templates 쪽엔 그대로 남아있어 "도구 호출까지"는 계속 배운다).
+_FAKE_NAME_SYLLABLES = ["알파", "베타", "감마", "델타", "에코", "폭스", "골프", "호텔"]
+
+
+def _fake_row_value(col: dict[str, str], seq: int) -> Any:
+    """컬럼 타입에 맞는 가짜 값 하나. 실제 고객 데이터는 절대 쓰지 않는다."""
+    if col["type"] == "Picklist":
+        options = parse_picklist_options(col["desc"])
+        return random.choice(options)[1] if options else "값없음"
+    if col["type"] in _NUMERIC_TYPES:
+        return random.choice([120, 340, 890, 1500, 4200, 15000, 32000])
+    return f"샘플{random.choice(_FAKE_NAME_SYLLABLES)}{seq}"
+
+
+def build_answer_scenarios(
+    entry: SchemaEntry, columns: list[dict[str, str]]
+) -> list[dict[str, Any]]:
+    """최종 답변까지 렌더링할 수 있는 시나리오만 골라 반환 — 어떤 컬럼을
+    가짜로 채워야 하는지(fill_columns)까지 같이 담는다."""
+    label = entry.label or ""
+    entity_set = entry.entity_set_name
+    if not entity_set:
+        return []
+
+    name_col = pick_name_column(columns)
+    numeric_cols = [
+        c for c in columns
+        if c["type"] in _NUMERIC_TYPES and not c["name"].endswith(("_base",))
+        and c["name"] not in _NOISE_NUMERIC_COLUMNS
+    ]
+    has_statecode = any(c["name"] == "statecode" for c in columns)
+
+    scenarios: list[dict[str, Any]] = []
+
+    n = 5
+    sel = f"$select={name_col['name']}&" if name_col else ""
+    scenarios.append({
+        "question": f"최근 등록된 {label} {n}건만 보여줘",
+        "path": f"{entity_set}?{sel}$orderby=createdon desc&$top={n}",
+        "kind": "list",
+        "fill_columns": [name_col] if name_col else [],
+        "row_count": min(n, 5) if name_col else 0,
+    })
+
+    scenarios.append({
+        "question": f"{label}{_josa(label, '이', '가')} 총 몇 건 있어?",
+        "path": f"{entity_set}/$count",
+        "kind": "count",
+        "fill_columns": [],
+        "row_count": 0,
+    })
+    if has_statecode:
+        scenarios.append({
+            "question": f"활성 상태인 {label}{_josa(label, '은', '는')} 몇 건이야?",
+            "path": f"{entity_set}/$count?$filter=statecode eq 0",
+            "kind": "count",
+            "fill_columns": [],
+            "row_count": 0,
+        })
+
+    if numeric_cols and name_col:
+        c = numeric_cols[0]
+        num_label = clean_label(c["desc"])
+        n2 = 5
+        sel2 = f"$select={name_col['name']},{c['name']}"
+        scenarios.append({
+            "question": f"{label} 중 {num_label}{_josa(num_label, '이', '가')} 가장 높은 상위 {n2}개를 보여줘",
+            "path": f"{entity_set}?{sel2}&$orderby={c['name']} desc&$top={n2}",
+            "kind": "list",
+            "fill_columns": [name_col, c],
+            "row_count": min(n2, 5),
+        })
+
+    return [s for s in scenarios if s["kind"] == "count" or s["fill_columns"]]
+
+
+def _fmt_number(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        return f"{value:,}"
+    return str(value)
+
+
+def render_tool_result_and_answer(scenario: dict[str, Any], label: str) -> tuple[str, str]:
+    """(가짜 tool_result 문자열, 규칙을 지킨 최종 답변 텍스트) 한 쌍을 만든다."""
+    if scenario["kind"] == "count":
+        count = random.choice([0, 3, 7, 15, 28, 42, 93])
+        if count == 0:
+            return "0", "해당 조건에 맞는 데이터가 없습니다."
+        return str(count), f"{label} 총 {count:,}건입니다."
+
+    fill_columns = scenario["fill_columns"]
+    rows = [
+        {c["name"]: _fake_row_value(c, i + 1) for c in fill_columns}
+        for i in range(scenario["row_count"])
+    ]
+    tool_result = json.dumps({"value": rows}, ensure_ascii=False)
+    if not rows:
+        return tool_result, "해당 조건에 맞는 데이터가 없습니다."
+
+    headers = [clean_label(c["desc"]) or c["name"] for c in fill_columns]
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "|" + "---|" * len(headers),
+    ]
+    for row in rows:
+        cells = [
+            _fmt_number(row[c["name"]]) if c["type"] in _NUMERIC_TYPES else str(row[c["name"]])
+            for c in fill_columns
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    answer = f"{label} 조회 결과입니다.\n\n" + "\n".join(lines)
+    return tool_result, answer
 
 
 def generate_examples_for_table(
@@ -437,15 +569,17 @@ NEGATIVE_TEMPLATES = [
 
 
 def build_negative_examples(
-    schema: dict[str, SchemaEntry], in_scope: list[str], candidate_tables: list[str], n: int
+    schema: dict[str, SchemaEntry], picked: list[str], candidate_tables: list[str], n: int,
+    scope_size_range: tuple[int, int] = (3, 8),
 ) -> list[dict[str, Any]]:
     """스코프 밖 테이블을 묻는 질문 → 정답은 '거절 후 스코프 안에서 재안내'.
 
-    질문 대상 테이블은 호출부가 미리 train/test로 나눠준 ``candidate_tables``
-    안에서만 뽑는다(split_tables 참고) — 여기서 다시 "schema 전체 중 in_scope
-    아닌 것"을 계산하면 train쪽 negative와 test쪽 negative가 같은 테이블을
-    가리킬 수 있어(둘 다 "in_scope 아닌 전체"에서 뽑으니) 테이블 단위 분리가
-    깨진다.
+    실제 프로젝트는 카탈로그 전체(picked)가 아니라 그중 몇 개 테이블만 스코프로
+    쓴다 — 그래서 매 예시마다 picked의 무작위 부분집합(scope_size_range)을
+    "이 예시만의 가상 프로젝트 스코프"로 새로 뽑고, 그 스코프 밖에 있는(picked
+    전체 기준) 테이블에 대한 질문을 만든다. 질문 대상 테이블 자체는 호출부가
+    미리 train/test로 나눠준 ``candidate_tables``에서만 뽑아(split_tables 참고)
+    같은 테이블이 train·test 양쪽의 거절 예시에 동시에 등장하지 않게 한다.
     """
     if not candidate_tables:
         return []
@@ -455,13 +589,22 @@ def build_negative_examples(
         entry = schema[table]
         label = entry.label or table
         question = random.choice(NEGATIVE_TEMPLATES).format(label=label)
-        in_scope_labels = ", ".join(schema[t].label or t for t in in_scope)
+
+        scope_pool = [t for t in picked if t != table]
+        scope_size = min(len(scope_pool), random.randint(*scope_size_range))
+        scenario_scope = random.sample(scope_pool, k=scope_size) if scope_pool else []
+        in_scope_labels = ", ".join(schema[t].label or t for t in scenario_scope) or "(없음)"
+
+        eun_neun_neg = _josa(label, "은", "는")
         answer = (
-            f'"{label}"은(는) 이 프로젝트에서 조회 가능한 테이블이 아닙니다. '
+            f'"{label}"{eun_neun_neg} 이 프로젝트에서 조회 가능한 테이블이 아닙니다. '
             f"현재 조회 가능한 테이블은 {in_scope_labels}입니다. "
             "이 중에서 다시 질문해 주세요."
         )
-        examples.append({"question": question, "answer_text": answer, "is_negative": True, "table": table})
+        examples.append({
+            "question": question, "answer_text": answer, "is_negative": True,
+            "table": table, "scenario_scope": scenario_scope,
+        })
     return examples
 
 
@@ -491,6 +634,7 @@ def make_positive_record(
                 "content": None,
                 "tool_calls": [
                     {
+                        "id": "call_1",
                         "type": "function",
                         "function": {
                             "name": "dataverse_query",
@@ -499,6 +643,48 @@ def make_positive_record(
                     }
                 ],
             },
+        ],
+    }
+
+
+def make_answer_record(
+    catalog_id: str,
+    schema: dict[str, SchemaEntry],
+    tables_in_scope: list[str],
+    question: str,
+    path: str,
+    tool_result: str,
+    answer_text: str,
+    split: str,
+) -> dict[str, Any]:
+    """도구 호출 다음 턴까지 — 가짜 조회 결과를 받아 규칙에 맞는 최종 답변을
+    내놓는 4턴짜리 대화. make_positive_record(도구 호출까지만)를 보완한다."""
+    system = build_training_system_prompt(tables_in_scope, schema)
+    return {
+        "meta": {
+            "catalog_id": catalog_id,
+            "tables_in_scope": tables_in_scope,
+            "negative": False,
+            "kind": "tool_result_answer",
+            "split": split,
+        },
+        "tools": TOOLS_SCHEMA,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": question},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "dataverse_query", "arguments": {"path": path}},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "name": "dataverse_query", "content": tool_result},
+            {"role": "assistant", "content": answer_text, "tool_calls": None},
         ],
     }
 
@@ -553,8 +739,18 @@ def split_tables(tables: list[str], test_ratio: float) -> tuple[list[str], list[
 # ─── 메인 ───────────────────────────────────────────────────────────────────
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--max-tables", type=int, default=20, help="카탈로그당 사용할 테이블 수")
+    parser.add_argument(
+        "--max-tables", type=int, default=200,
+        help="카탈로그당 사용할 테이블 수 상한 — 기본값은 실제 카탈로그 테이블 수(현재 36개)보다"
+        " 넉넉히 커서 사실상 전부 사용된다. 생성이 로컬 템플릿이라 무료·즉시라 상한을 낮게 둘"
+        " 이유가 없다 — 빠른 스모크테스트할 때만 작게 주면 된다(예: --max-tables 5).",
+    )
     parser.add_argument("--examples-per-table", type=int, default=8)
+    parser.add_argument(
+        "--answers-per-table", type=int, default=3,
+        help="테이블마다 '도구 결과→최종 답변'까지 포함하는 예시를 몇 개 만들지"
+        "(build_answer_scenarios가 만들 수 있는 것 중에서 뽑음, 최대 4개)",
+    )
     parser.add_argument("--negatives-per-catalog", type=int, default=6)
     parser.add_argument(
         "--test-ratio", type=float, default=0.15,
@@ -590,6 +786,7 @@ def main() -> None:
             f"(train {len(train_tables)} / test {len(test_tables)} 테이블) ==="
         )
 
+        answer_total = 0
         for split_name, tables_for_split, bucket in (
             ("train", train_tables, train_records),
             ("test", test_tables, test_records),
@@ -597,22 +794,40 @@ def main() -> None:
             for table in tables_for_split:
                 entry = schema[table]
                 examples = generate_examples_for_table(table, entry, args.examples_per_table, schema)
-                print(f"  [{split_name}] {table} ({entry.label}): {len(examples)}건 채택")
+                columns = parse_columns(entry.schema)
+                scenarios = build_answer_scenarios(entry, columns)
+                random.shuffle(scenarios)
+                scenarios = scenarios[: args.answers_per_table]
+                print(
+                    f"  [{split_name}] {table} ({entry.label}): "
+                    f"도구호출만 {len(examples)}건 + 최종답변포함 {len(scenarios)}건"
+                )
                 for ex in examples:
                     bucket.append(
                         make_positive_record(
                             catalog_id, schema, [table], ex["question"], ex["path"], split_name
                         )
                     )
+                for sc in scenarios:
+                    tool_result, answer_text = render_tool_result_and_answer(sc, entry.label or table)
+                    bucket.append(
+                        make_answer_record(
+                            catalog_id, schema, [table], sc["question"], sc["path"],
+                            tool_result, answer_text, split_name,
+                        )
+                    )
+                    answer_total += 1
 
-        # 2) 거절(negative) 예시 — "질문 대상인 스코프 밖 테이블" 자체를 마찬가지로
-        #    train/test 풀로 미리 나눈 뒤 각 풀 안에서만 뽑는다. 카탈로그당 개수가
+        # 2) 거절(negative) 예시 — "질문 대상 테이블" 자체를 picked 안에서 미리
+        #    train/test 풀로 나눈 뒤 각 풀 안에서만 뽑는다(out-of-scope 전용
+        #    잔여 풀이 아니라 picked 자체를 씀 — max_tables를 카탈로그 전체
+        #    크기 이상으로 키우면 "picked 밖"이 아예 없어지기 때문. 대신 각
+        #    거절 예시는 picked의 무작위 부분집합을 그 예시만의 가상 스코프로
+        #    삼고, 뽑힌 테이블은 그 가상 스코프에서 제외해 "스코프 밖"을
+        #    시뮬레이션한다 — build_negative_examples 참고). 카탈로그당 개수가
         #    적어(기본 6개) 그냥 다 섞어 비율대로 자르면 test에 하나도 안 들어갈
         #    수 있으므로, test 몫은 최소 1개를 보장한다(풀이 있는 한).
-        out_of_scope_pool = [t for t in schema if t not in picked]
-        neg_train_pool, neg_test_pool = (
-            split_tables(out_of_scope_pool, args.test_ratio) if out_of_scope_pool else ([], [])
-        )
+        neg_train_pool, neg_test_pool = split_tables(picked, args.test_ratio) if picked else ([], [])
         neg_test_n = max(1, round(args.negatives_per_catalog * args.test_ratio)) if neg_test_pool else 0
 
         for split_name, pool, bucket, n in (
@@ -623,11 +838,12 @@ def main() -> None:
             for neg in negatives:
                 bucket.append(
                     make_negative_record(
-                        catalog_id, schema, picked, neg["question"], neg["answer_text"],
+                        catalog_id, schema, neg["scenario_scope"], neg["question"], neg["answer_text"],
                         split_name, neg["table"],
                     )
                 )
             print(f"  [{split_name}] 거절 예시 {len(negatives)}건 추가")
+        print(f"  최종답변포함 예시 총 {answer_total}건")
 
         table_split_by_catalog[catalog_id] = {
             "train_positive": set(train_tables),
@@ -667,12 +883,15 @@ def main() -> None:
     write_jsonl(out_dir / "dataverse_toolcall_dataset.train.jsonl", train_records)
     write_jsonl(out_dir / "dataverse_toolcall_dataset.test.jsonl", test_records)
 
-    train_neg = sum(1 for r in train_records if r["meta"]["negative"])
-    test_neg = sum(1 for r in test_records if r["meta"]["negative"])
+    def _counts(records: list[dict[str, Any]]) -> str:
+        neg = sum(1 for r in records if r["meta"]["negative"])
+        ans = sum(1 for r in records if r["meta"].get("kind") == "tool_result_answer")
+        call_only = len(records) - neg - ans
+        return f"{len(records)}건(도구호출만 {call_only} / 최종답변포함 {ans} / 거절 {neg})"
+
     print(
         f"\n완료: 총 {len(all_records)}건 "
-        f"(train {len(train_records)}건 — 거절 {train_neg}건 포함 / "
-        f"test {len(test_records)}건 — 거절 {test_neg}건 포함) "
+        f"(train {_counts(train_records)} / test {_counts(test_records)}) "
         f"→ {out_dir}"
     )
 
