@@ -34,14 +34,26 @@ SQL 문자열이 아니라 실제 프로덕션과 같은 "도구 호출"(tool_ca
      카탈로그가 안 실리던" 버그의 영향을 받지 않기 위함). backend/chat_api.py의
      _build_system_prompt가 바뀌면 아래 SYSTEM_PROMPT_FIXED_LINES도 같이 갱신해야
      학습 시점 프롬프트와 실제 배포 프롬프트가 어긋나지 않는다.
+  5. train/test는 예시 단위가 아니라 **테이블 단위**로 나눈다(split_tables 참고).
+     같은 테이블에서 나온 질문 여러 개를 무작위로 섞어 일부는 train, 일부는
+     test로 흩뿌리면, test가 실제로 재는 게 "한 번도 못 본 테이블에 일반화하는가"가
+     아니라 "이미 본 테이블의 변형 문제를 푸는가"가 되어버려 성능이 실제보다
+     좋아 보이는 착시가 생긴다. 거절(negative) 예시도 같은 원칙으로, 질문 대상인
+     "스코프 밖 테이블" 자체를 train/test 풀로 미리 나눠서 같은 테이블에 대한
+     거절 문제가 양쪽에 겹치지 않게 하고, 두 카탈로그(Quali·가상 물류)가 test에도
+     항상 대표로 들어가게 한다(카탈로그 단위 stratify) — 전체를 그냥 섞어서
+     15%를 자르면 표본이 적은 쪽(거절 예시, 작은 카탈로그)이 운 나쁘면 test에
+     하나도 안 들어갈 수 있었다.
 
 실행 (crm-ai-chat 루트에서, 외부 호출이 없으므로 --yes 불필요, 즉시·무료 실행):
     .venv\\Scripts\\python scripts\\generate_finetune_dataset.py
     .venv\\Scripts\\python scripts\\generate_finetune_dataset.py --max-tables 20 --examples-per-table 8
 
-출력: data/finetune/dataverse_toolcall_dataset.jsonl
-      각 줄 = {"messages": [...], "tools": [...], "meta": {...}}
-      + data/finetune/dataverse_toolcall_dataset.train.jsonl / .test.jsonl (분리본)
+출력: data/finetune/dataverse_toolcall_dataset.jsonl (train+test 전체)
+      각 줄 = {"messages": [...], "tools": [...], "meta": {..., "split": "train"|"test"}}
+      + data/finetune/dataverse_toolcall_dataset.train.jsonl / .test.jsonl (테이블 단위 분리본 —
+        같은 테이블/거절 대상 테이블이 두 파일에 동시에 등장하지 않음이 보장됨, main() 끝의
+        검증 참고)
 """
 from __future__ import annotations
 
@@ -425,13 +437,19 @@ NEGATIVE_TEMPLATES = [
 
 
 def build_negative_examples(
-    schema: dict[str, SchemaEntry], in_scope: list[str], n: int
+    schema: dict[str, SchemaEntry], in_scope: list[str], candidate_tables: list[str], n: int
 ) -> list[dict[str, Any]]:
-    """스코프 밖 테이블을 묻는 질문 → 정답은 '거절 후 스코프 안에서 재안내'."""
-    out_of_scope = [t for t in schema if t not in in_scope]
-    if not out_of_scope:
+    """스코프 밖 테이블을 묻는 질문 → 정답은 '거절 후 스코프 안에서 재안내'.
+
+    질문 대상 테이블은 호출부가 미리 train/test로 나눠준 ``candidate_tables``
+    안에서만 뽑는다(split_tables 참고) — 여기서 다시 "schema 전체 중 in_scope
+    아닌 것"을 계산하면 train쪽 negative와 test쪽 negative가 같은 테이블을
+    가리킬 수 있어(둘 다 "in_scope 아닌 전체"에서 뽑으니) 테이블 단위 분리가
+    깨진다.
+    """
+    if not candidate_tables:
         return []
-    picks = random.sample(out_of_scope, k=min(n, len(out_of_scope)))
+    picks = random.sample(candidate_tables, k=min(n, len(candidate_tables)))
     examples = []
     for table in picks:
         entry = schema[table]
@@ -443,7 +461,7 @@ def build_negative_examples(
             f"현재 조회 가능한 테이블은 {in_scope_labels}입니다. "
             "이 중에서 다시 질문해 주세요."
         )
-        examples.append({"question": question, "answer_text": answer, "is_negative": True})
+        examples.append({"question": question, "answer_text": answer, "is_negative": True, "table": table})
     return examples
 
 
@@ -454,10 +472,16 @@ def make_positive_record(
     tables_in_scope: list[str],
     question: str,
     path: str,
+    split: str,
 ) -> dict[str, Any]:
     system = build_training_system_prompt(tables_in_scope, schema)
     return {
-        "meta": {"catalog_id": catalog_id, "tables_in_scope": tables_in_scope, "negative": False},
+        "meta": {
+            "catalog_id": catalog_id,
+            "tables_in_scope": tables_in_scope,
+            "negative": False,
+            "split": split,
+        },
         "tools": TOOLS_SCHEMA,
         "messages": [
             {"role": "system", "content": system},
@@ -485,10 +509,18 @@ def make_negative_record(
     tables_in_scope: list[str],
     question: str,
     answer_text: str,
+    split: str,
+    asked_about_table: str,
 ) -> dict[str, Any]:
     system = build_training_system_prompt(tables_in_scope, schema)
     return {
-        "meta": {"catalog_id": catalog_id, "tables_in_scope": tables_in_scope, "negative": True},
+        "meta": {
+            "catalog_id": catalog_id,
+            "tables_in_scope": tables_in_scope,
+            "negative": True,
+            "split": split,
+            "asked_about_table": asked_about_table,
+        },
         "tools": TOOLS_SCHEMA,
         "messages": [
             {"role": "system", "content": system},
@@ -498,12 +530,36 @@ def make_negative_record(
     }
 
 
+# ─── train/test 분리 — 테이블 단위 ────────────────────────────────────────────
+def split_tables(tables: list[str], test_ratio: float) -> tuple[list[str], list[str]]:
+    """테이블 "목록"을 train/test 두 그룹으로 나눈다(예시 하나하나가 아니라).
+
+    호출부가 이 결과를 그대로 써서 "이 테이블에서 나온 예시는 전부 train(또는
+    test)"으로 배정하므로, 같은 테이블의 문제가 두 쪽에 걸쳐 섞일 수 없다.
+    테이블이 2개 이상이면 test가 0개가 되지 않도록(전부 train에 쏠리는 것 방지)
+    최소 1개는 test로 보장한다 — 반대로 test에 전부 쏠려 train이 비는 것도 같이
+    막는다.
+    """
+    shuffled = list(tables)
+    random.shuffle(shuffled)
+    n_test = round(len(shuffled) * test_ratio)
+    if len(shuffled) >= 2:
+        n_test = max(1, min(len(shuffled) - 1, n_test))
+    else:
+        n_test = 0
+    return shuffled[n_test:], shuffled[:n_test]  # (train, test)
+
+
 # ─── 메인 ───────────────────────────────────────────────────────────────────
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--max-tables", type=int, default=20, help="카탈로그당 사용할 테이블 수")
     parser.add_argument("--examples-per-table", type=int, default=8)
     parser.add_argument("--negatives-per-catalog", type=int, default=6)
+    parser.add_argument(
+        "--test-ratio", type=float, default=0.15,
+        help="테이블·거절대상 테이블을 test로 떼는 비율(테이블 단위 — 예시 단위 아님)",
+    )
     parser.add_argument("--seed", type=int, default=1111)
     args = parser.parse_args()
 
@@ -515,36 +571,89 @@ def main() -> None:
     }
     print("생성 방식: 로컬 규칙 기반 템플릿 (외부 API 호출 없음, 비용 0원)")
 
-    all_records: list[dict[str, Any]] = []
+    train_records: list[dict[str, Any]] = []
+    test_records: list[dict[str, Any]] = []
+    # 리크(같은 테이블/거절대상 테이블이 train·test 둘 다에 등장) 여부를 끝에서
+    # 검증하기 위해 카탈로그별로 어느 테이블을 어느 split에 배정했는지 기록해둔다.
+    table_split_by_catalog: dict[str, dict[str, set[str]]] = {}
 
     for catalog_id, schema in catalogs.items():
         table_keys = list(schema.keys())
         random.shuffle(table_keys)
         picked = table_keys[: args.max_tables]
-        print(f"\n=== {catalog_id}: {len(picked)}개 테이블 사용 ===")
 
-        for table in picked:
-            entry = schema[table]
-            examples = generate_examples_for_table(table, entry, args.examples_per_table, schema)
-            print(f"  {table} ({entry.label}): {len(examples)}건 채택")
-            for ex in examples:
-                all_records.append(
-                    make_positive_record(catalog_id, schema, [table], ex["question"], ex["path"])
+        # 1) 양성(positive) 예시 — 테이블 자체를 train/test로 나눈다. 같은
+        #    테이블에서 나온 문제가 두 split에 걸쳐 섞이지 않는다.
+        train_tables, test_tables = split_tables(picked, args.test_ratio)
+        print(
+            f"\n=== {catalog_id}: {len(picked)}개 테이블 사용 "
+            f"(train {len(train_tables)} / test {len(test_tables)} 테이블) ==="
+        )
+
+        for split_name, tables_for_split, bucket in (
+            ("train", train_tables, train_records),
+            ("test", test_tables, test_records),
+        ):
+            for table in tables_for_split:
+                entry = schema[table]
+                examples = generate_examples_for_table(table, entry, args.examples_per_table, schema)
+                print(f"  [{split_name}] {table} ({entry.label}): {len(examples)}건 채택")
+                for ex in examples:
+                    bucket.append(
+                        make_positive_record(
+                            catalog_id, schema, [table], ex["question"], ex["path"], split_name
+                        )
+                    )
+
+        # 2) 거절(negative) 예시 — "질문 대상인 스코프 밖 테이블" 자체를 마찬가지로
+        #    train/test 풀로 미리 나눈 뒤 각 풀 안에서만 뽑는다. 카탈로그당 개수가
+        #    적어(기본 6개) 그냥 다 섞어 비율대로 자르면 test에 하나도 안 들어갈
+        #    수 있으므로, test 몫은 최소 1개를 보장한다(풀이 있는 한).
+        out_of_scope_pool = [t for t in schema if t not in picked]
+        neg_train_pool, neg_test_pool = (
+            split_tables(out_of_scope_pool, args.test_ratio) if out_of_scope_pool else ([], [])
+        )
+        neg_test_n = max(1, round(args.negatives_per_catalog * args.test_ratio)) if neg_test_pool else 0
+
+        for split_name, pool, bucket, n in (
+            ("train", neg_train_pool, train_records, args.negatives_per_catalog),
+            ("test", neg_test_pool, test_records, neg_test_n),
+        ):
+            negatives = build_negative_examples(schema, picked, pool, n)
+            for neg in negatives:
+                bucket.append(
+                    make_negative_record(
+                        catalog_id, schema, picked, neg["question"], neg["answer_text"],
+                        split_name, neg["table"],
+                    )
                 )
+            print(f"  [{split_name}] 거절 예시 {len(negatives)}건 추가")
 
-        negatives = build_negative_examples(schema, picked, args.negatives_per_catalog)
-        for neg in negatives:
-            all_records.append(
-                make_negative_record(
-                    catalog_id, schema, picked, neg["question"], neg["answer_text"]
-                )
-            )
-        print(f"  거절 예시 {len(negatives)}건 추가")
+        table_split_by_catalog[catalog_id] = {
+            "train_positive": set(train_tables),
+            "test_positive": set(test_tables),
+            "train_negative": set(neg_train_pool),
+            "test_negative": set(neg_test_pool),
+        }
 
-    random.shuffle(all_records)
-    n_test = max(1, int(len(all_records) * 0.15))
-    test_records = all_records[:n_test]
-    train_records = all_records[n_test:]
+    # 3) 리크 검증 — 지금까지의 배정이 실제로 겹치지 않는지 코드로 한 번 더 확인한다.
+    #    (사람이 "이론상 안 겹친다"고 설명하는 것과 실제로 안 겹치는 걸 매 실행마다
+    #    기계적으로 확인하는 건 다르다.)
+    leaks: list[str] = []
+    for catalog_id, groups in table_split_by_catalog.items():
+        pos_overlap = groups["train_positive"] & groups["test_positive"]
+        neg_overlap = groups["train_negative"] & groups["test_negative"]
+        if pos_overlap:
+            leaks.append(f"{catalog_id}: 양성 예시 테이블이 train/test에 겹침 → {pos_overlap}")
+        if neg_overlap:
+            leaks.append(f"{catalog_id}: 거절 대상 테이블이 train/test에 겹침 → {neg_overlap}")
+    if leaks:
+        raise RuntimeError("train/test 테이블 분리 검증 실패:\n" + "\n".join(leaks))
+    print("\n검증 통과: 어떤 테이블(양성·거절대상 모두)도 train·test에 동시에 등장하지 않음.")
+
+    random.shuffle(train_records)
+    random.shuffle(test_records)
+    all_records = train_records + test_records
 
     out_dir = ROOT / "data" / "finetune"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -558,9 +667,12 @@ def main() -> None:
     write_jsonl(out_dir / "dataverse_toolcall_dataset.train.jsonl", train_records)
     write_jsonl(out_dir / "dataverse_toolcall_dataset.test.jsonl", test_records)
 
+    train_neg = sum(1 for r in train_records if r["meta"]["negative"])
+    test_neg = sum(1 for r in test_records if r["meta"]["negative"])
     print(
         f"\n완료: 총 {len(all_records)}건 "
-        f"(train {len(train_records)} / test {len(test_records)}) "
+        f"(train {len(train_records)}건 — 거절 {train_neg}건 포함 / "
+        f"test {len(test_records)}건 — 거절 {test_neg}건 포함) "
         f"→ {out_dir}"
     )
 
